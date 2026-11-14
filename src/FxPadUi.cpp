@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "FxPadUi.hpp"
 
+#include "crosspad-gui/components/touch_gesture.h"
+
 #include <cmath>
 #include <mutex>
 #include <cstdio>
@@ -326,6 +328,9 @@ static void build_pad(lv_obj_t *pg) {
     P.axw = txt(P.xy, F10, C_TEXT, 0, 6, "");
     lv_obj_add_flag(P.xy, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(P.xy, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    /* A finger run sideways across the pad is the pad's, not the screen-wide
+     * back swipe -- which is KILL here, and cut every effect off mid-gesture. */
+    lv_obj_add_flag(P.xy, crosspad_gui::kDragsHorizontal);
     const lv_event_code_t ev[] = { LV_EVENT_PRESSED, LV_EVENT_PRESSING, LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST };
     for (int i = 0; i < 4; i++) lv_obj_add_event_cb(P.xy, on_xy, ev[i], NULL);
 }
