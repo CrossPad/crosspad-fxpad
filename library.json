@@ -1,0 +1,17 @@
+{
+    "name": "crosspad-fxpad",
+    "version": "0.1.0",
+    "license": "GPL-3.0-or-later",
+    "description": "The board as a performance multi-effect: inputs through sixteen effects the pads hold",
+    "keywords": [
+        "crosspad",
+        "fx",
+        "effects",
+        "lvgl",
+        "audio"
+    ],
+    "dependencies": {
+        "crosspad-core": ">=2.47.0,<3.0.0",
+        "crosspad-gui": ">=2.0.0,<3.0.0"
+    }
+}
