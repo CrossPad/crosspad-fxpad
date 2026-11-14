@@ -4,6 +4,7 @@
 #include <cmath>
 #include <mutex>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #define C_BG    0x16181B
@@ -22,7 +23,8 @@
 #define XY_Y 40
 #define XY_W 312
 #define XY_H 120
-#define TRAIL_N 14
+#define TRAIL_N 5     /* dots behind the finger: a few small objects, not a line over the pad */
+#define TICK 6        /* the cursor's marks on the pad's edges */
 
 static const uint32_t CAT_COL[] = { 0x4EA6D3, 0xA77BF0, 0xC6FF47, 0x4FE0B0, 0xFF5C5C, 0xFFC857 };
 static const char *CAT_TAG[] = { "DLY", "REV", "FLT", "MOD", "GLT", "DST" };
@@ -45,6 +47,23 @@ static cp_fx_def_t FX[CP_FX_COUNT] = {
     {"PHASER",CP_FX_CAT_MOD,"SPEED","FDBK",0,1,0,.9f,false,CP_FX_REL_TAIL},
     {"BITCRUSH",CP_FX_CAT_DST,"BITS","RATE",0,1,0,1,false,CP_FX_REL_SNAP},
     {"DRIVE",CP_FX_CAT_DST,"GAIN","TONE",0,1,0,1,false,CP_FX_REL_SNAP},
+    /* Bank B: the ones that cut the sound up, all on the last seconds of the input. */
+    {"STUTTER",CP_FX_CAT_GLT,"SLICE","GATE",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"BEAT RPT",CP_FX_CAT_GLT,"LEN","STEP",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"GLITCH",CP_FX_CAT_GLT,"SLICE","CHAOS",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"SLICER",CP_FX_CAT_GLT,"PATTERN","DEPTH",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"REVERSE",CP_FX_CAT_GLT,"LEN","TONE",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"TAPE STOP",CP_FX_CAT_GLT,"TIME","CURVE",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"SPINBACK",CP_FX_CAT_GLT,"TIME","BACK",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"SCRATCH",CP_FX_CAT_GLT,"POSITION","LEN",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"GRAIN",CP_FX_CAT_MOD,"SIZE","DENSITY",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"PITCH",CP_FX_CAT_MOD,"SHIFT","FDBK",0,1,0,.9f,false,CP_FX_REL_SNAP},
+    {"AUTO FLT",CP_FX_CAT_FLT,"RATE","RES",0,1,0,.9f,false,CP_FX_REL_SNAP},
+    {"PUMP",CP_FX_CAT_GLT,"RATE","DEPTH",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"LOFI",CP_FX_CAT_DST,"AGE","WOBBLE",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"RING MOD",CP_FX_CAT_DST,"FREQ","SHAPE",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"ECHO FRZ",CP_FX_CAT_DLY,"LEN","FADE",0,1,0,1,false,CP_FX_REL_SNAP},
+    {"PAN CHOP",CP_FX_CAT_GLT,"SLICE","WIDTH",0,1,0,1,false,CP_FX_REL_SNAP},
 };
 static const char *SRC_NAME[] = { "IN 1/2", "IN 3/4", "MIC", "USB 1/2" };
 static const char *SRC_SUB[]  = { "Line", "Line", "Built-in", "Host" };
@@ -54,24 +73,28 @@ static const int OUT_Y[] = { 4, 53, 102 };
 static const char *TAB_NAME[] = { "PAD", "FX", "EDIT", "ROUTE" };
 
 /* Soft keys: each tab's own, spread over the width. */
-enum sk_t { SK_HOLD, SK_SYNC, SK_WET, SK_TAP, SK_KILL, SK_LATCH, SK_CLEAR, SK_EXIT,
-            SK_SWAP, SK_LIN, SK_EXP, SK_SNAP, SK_TAIL, SK_DRY, SK_PRE, SK_POST, SK_MONO, SK_RCLR, SK_COUNT };
-static const char *SK_NAME[SK_COUNT] = { "HOLD","SYNC","WET","TAP","KILL","LATCH","CLEAR","MAIN FW",
-                                         "SWAP X/Y","LIN","EXP","SNAP","TAIL","THRU","PRE","POST","MONO","CLEAR" };
+enum sk_t { SK_HOLD, SK_SYNC, SK_WET, SK_TAP, SK_KILL, SK_LATCH, SK_BANK, SK_CLEAR, SK_EXIT,
+            SK_SWAP, SK_LIN, SK_EXP, SK_SNAP, SK_TAIL, SK_DRY, SK_PRE, SK_MONO, SK_USB, SK_RCLR, SK_COUNT };
+static const char *SK_NAME[SK_COUNT] = { "HOLD","SYNC","WET","TAP","KILL","LATCH","BANK A","CLEAR","MAIN FW",
+                                         "SWAP X/Y","LIN","EXP","SNAP","TAIL","THRU","PRE","MONO","USB REC","CLEAR" };
 static const sk_t SK_PAD[]   = { SK_HOLD, SK_SYNC, SK_WET, SK_TAP, SK_KILL };
-static const sk_t SK_FX[]    = { SK_LATCH, SK_CLEAR, SK_EXIT };
+static const sk_t SK_FX[]    = { SK_LATCH, SK_BANK, SK_CLEAR, SK_EXIT };
 static const sk_t SK_EDIT[]  = { SK_SWAP, SK_LIN, SK_EXP, SK_SNAP, SK_TAIL };
-static const sk_t SK_ROUTE[] = { SK_DRY, SK_PRE, SK_POST, SK_MONO, SK_RCLR };
+static const sk_t SK_ROUTE[] = { SK_DRY, SK_PRE, SK_MONO, SK_USB, SK_RCLR };
 static const sk_t *const SK_TAB[4] = { SK_PAD, SK_FX, SK_EDIT, SK_ROUTE };
-static const int SK_N[4] = { 5, 3, 5, 5 };
+static const int SK_N[4] = { 5, 4, 5, 5 };
 
 static struct {
     lv_obj_t *root, *tab[4], *page[4], *sk[SK_COUNT];
     /* PAD */
-    lv_obj_t *xy, *vline, *hline, *halo, *dot, *trail, *chip[CP_FX_SLOTS], *chipl[CP_FX_SLOTS], *name[CP_FX_SLOTS], *hint, *axx, *axy, *axw;
-    lv_point_precise_t tp[TRAIL_N]; int tn;
+    lv_obj_t *xy, *tick[4], *halo, *dot, *trail[TRAIL_N], *chip[CP_FX_SLOTS], *chipl[CP_FX_SLOTS], *name[CP_FX_SLOTS], *hint, *axx, *axy, *axw;
+    int tx[TRAIL_N], ty[TRAIL_N], tn;    /* the trail, newest first */
+    /* What the pad shows now: a property is set only when it changes -- every
+     * style set invalidates its whole object, and the pad is 312 x 120. */
+    int dpx, dpy, dkey; char dtxt[3][32];
+    int dbank;                   /* the bank the FX grid shows */
     /* FX */
-    lv_obj_t *tile[CP_FX_COUNT], *tname[CP_FX_COUNT], *ttag[CP_FX_COUNT];
+    lv_obj_t *tile[CP_FX_BANK], *tname[CP_FX_BANK], *ttag[CP_FX_BANK];
     /* EDIT */
     lv_obj_t *erow[4], *ebar[2], *erng[2], *eval[4], *ehead, *echip;
     int esel;
@@ -82,6 +105,9 @@ static struct {
     uint8_t send[CP_FX_SRC_COUNT]; bool avail[CP_FX_SRC_COUNT]; bool outon[CP_FX_OUT_COUNT]; int ssel; cp_fx_tap_t tap; bool mono;
     cp_fx_tab_t tabsel;
     int held[CP_FX_SLOTS]; int nheld; uint8_t vel[CP_FX_COUNT];
+    int bank;                    /* the bank on the pads */
+    int8_t padfx[CP_FX_BANK];    /* the effect each pad started, so a release after a BANK finds it */
+    bool usbrec;
     int active;                  /* last pressed / tapped fx, edited in EDIT */
     float x, y;                  /* 0..1, y = 0 at bottom */
     bool hold, sync, latch, monitor, fullwet;
@@ -145,6 +171,17 @@ static void fmt(char *b, size_t n, const char *p, float v) {
     else if (!strcmp(p, "FREQ")) snprintf(b, n, "%d Hz", (int)(200 * powf(20, v)));
     else if (!strcmp(p, "BITS")) snprintf(b, n, "%d bit", (int)lroundf(16 - v * 12));
     else if (!strcmp(p, "PITCH")) snprintf(b, n, "+%d st", (int)lroundf(v * 24));
+    else if (!strcmp(p, "SLICE")) {
+        static const char *S[] = { "1/8", "1/16", "1/32", "1/64" };
+        if (P.sync) snprintf(b, n, "%s", S[(int)lroundf(v * 3)]);
+        else snprintf(b, n, "%d ms", (int)(125 * powf(.12f, v)));
+    } else if (!strcmp(p, "LEN")) {
+        static const char *L[] = { "1/16", "1/8", "1/4", "1/2", "1 BAR" };
+        if (P.sync) snprintf(b, n, "%s", L[(int)lroundf(v * 4)]);
+        else snprintf(b, n, "%d ms", (int)fminf(2500.f, 60 * powf(33, v)));
+    } else if (!strcmp(p, "PATTERN")) snprintf(b, n, "#%d", (int)lroundf(v * 7) + 1);
+    else if (!strcmp(p, "SHIFT")) snprintf(b, n, "%+d st", (int)lroundf(v * 24 - 12));
+    else if (!strcmp(p, "STEP")) snprintf(b, n, "%+d st", (int)lroundf((v - .5f) * 4));
     else snprintf(b, n, "%d%%", (int)lroundf(v * 100));
 }
 
@@ -159,63 +196,103 @@ static void emit(void) {
 }
 
 /* ---------- PAD view ---------- */
-static void draw_pad(void) {
-    int px = (int)(P.x * XY_W), py = (int)((1 - P.y) * XY_H);
-    bool act = P.nheld > 0;
-    uint32_t c = act ? CAT_COL[FX[P.held[P.nheld - 1]].cat] : C_DIM;
+/* An effect's short name on its chip: bank and pad, "A3", "B12". */
+static void chip_name(char *b, size_t n, int f) { snprintf(b, n, "%c%d", f < CP_FX_BANK ? 'A' : 'B', f % CP_FX_BANK + 1); }
+/* Flags and text only when they change: either one invalidates its object even when it does not. */
+static void show(lv_obj_t *o, bool on) {
+    if (on != lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return;
+    if (on) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+static bool set_text(lv_obj_t *l, char *was, const char *t) {
+    if (!strncmp(was, t, 31)) return false;
+    snprintf(was, 32, "%s", t); lv_label_set_text(l, t);
+    return true;
+}
+
+/* What is held changed: colours, chips, the border. Rare -- a pad, not a finger. */
+static void draw_held(uint32_t c, bool act) {
     lv_obj_set_style_border_color(P.xy, hx(c), 0); lv_obj_set_style_border_width(P.xy, act ? 2 : 0, 0);
-    lv_obj_set_x(P.vline, px); set_bg(P.vline, c);
-    lv_obj_set_y(P.hline, py); set_bg(P.hline, c);
-    lv_obj_set_pos(P.halo, px - 16, py - 16); set_bg(P.halo, c);
-    if (act) lv_obj_remove_flag(P.halo, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(P.halo, LV_OBJ_FLAG_HIDDEN);
-    int r = act ? 9 : 6;
-    lv_obj_set_size(P.dot, r * 2, r * 2); lv_obj_set_pos(P.dot, px - r, py - r);
+    for (lv_obj_t *t : P.tick) set_bg(t, c);
+    for (lv_obj_t *t : P.trail) set_bg(t, c);
+    set_bg(P.halo, c); show(P.halo, act);
+    const int r = act ? 9 : 6;
+    lv_obj_set_size(P.dot, r * 2, r * 2);
     lv_obj_set_style_bg_opa(P.dot, act ? LV_OPA_COVER : LV_OPA_TRANSP, 0); set_bg(P.dot, c);
     lv_obj_set_style_border_color(P.dot, hx(c), 0);
-    lv_obj_set_style_line_color(P.trail, hx(c), 0);
-    lv_line_set_points(P.trail, P.tp, P.tn);
-
     int cx = 6;
     for (int s = 0; s < CP_FX_SLOTS; s++) {
         bool on = s < P.nheld;
-        if (!on) { lv_obj_add_flag(P.chip[s], LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(P.name[s], LV_OBJ_FLAG_HIDDEN); continue; }
-        int f = P.held[s]; char b[12]; snprintf(b, sizeof b, "%d", f + 1);
-        lv_obj_remove_flag(P.chip[s], LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(P.name[s], LV_OBJ_FLAG_HIDDEN);
+        show(P.chip[s], on); show(P.name[s], on);
+        if (!on) continue;
+        int f = P.held[s]; char b[12]; chip_name(b, sizeof b, f);
         set_bg(P.chip[s], CAT_COL[FX[f].cat]); lv_label_set_text(P.chipl[s], b);
         lv_obj_set_x(P.chip[s], cx); lv_label_set_text(P.name[s], FX[f].name);
-        lv_obj_update_layout(P.name[s]); lv_obj_set_x(P.name[s], cx + 22);
-        cx += 22 + lv_obj_get_width(P.name[s]) + 8;
+        lv_obj_update_layout(P.name[s]); lv_obj_set_x(P.name[s], cx + 26);
+        cx += 26 + lv_obj_get_width(P.name[s]) + 8;
     }
-    if (act) lv_obj_add_flag(P.hint, LV_OBJ_FLAG_HIDDEN); else lv_obj_remove_flag(P.hint, LV_OBJ_FLAG_HIDDEN);
+    show(P.hint, !act); show(P.axw, act);
+}
+
+/* The finger moved: small objects moved, three short labels. A whole-pad
+ * line or a trail polyline invalidated all of 312 x 120 every move -- four of
+ * the display's 30-row bands over the SPI, ~15 ms -- and the cursor lagged. */
+static void draw_pad(void) {
+    const int px = (int)(P.x * (XY_W - 1)), py = (int)((1 - P.y) * (XY_H - 1));
+    const bool act = P.nheld > 0;
+    int key = P.nheld;
+    for (int s = 0; s < P.nheld; s++) key |= (P.held[s] + 1) << (4 + 6 * s);
+    if (key != P.dkey) {
+        P.dkey = key;
+        draw_held(act ? CAT_COL[FX[P.held[P.nheld - 1]].cat] : C_DIM, act);
+        P.dpx = -1;
+    }
+    if (px != P.dpx || py != P.dpy) {
+        P.dpx = px; P.dpy = py;
+        lv_obj_set_x(P.tick[0], px - 1); lv_obj_set_x(P.tick[1], px - 1);
+        lv_obj_set_y(P.tick[2], py - 1); lv_obj_set_y(P.tick[3], py - 1);
+        lv_obj_set_pos(P.halo, px - 16, py - 16);
+        const int r = act ? 9 : 6;
+        lv_obj_set_pos(P.dot, px - r, py - r);
+    }
+    for (int i = 0; i < TRAIL_N; i++) {
+        show(P.trail[i], i < P.tn);
+        if (i < P.tn) lv_obj_set_pos(P.trail[i], P.tx[i] - 3, P.ty[i] - 3);
+    }
 
     char a[32], v[16];
     if (act) {
         int f = P.held[P.nheld - 1];
         const cp_fx_def_t *d = &FX[f];
-        fmt(v, sizeof v, d->px, curve(d, P.x, true)); snprintf(a, sizeof a, "%s  %s", d->px, v); lv_label_set_text(P.axx, a);
-        fmt(v, sizeof v, d->py, curve(d, P.y, false)); snprintf(a, sizeof a, "%s  %s", d->py, v); lv_label_set_text(P.axy, a);
-        snprintf(a, sizeof a, "WET  %d%%", (int)lroundf(wet_of(f) * 100)); lv_label_set_text(P.axw, a);
-        lv_obj_remove_flag(P.axw, LV_OBJ_FLAG_HIDDEN);
+        fmt(v, sizeof v, d->px, curve(d, P.x, true)); snprintf(a, sizeof a, "%s  %s", d->px, v);
+        if (set_text(P.axx, P.dtxt[0], a)) lv_obj_align(P.axx, LV_ALIGN_BOTTOM_RIGHT, -6, -4);
+        fmt(v, sizeof v, d->py, curve(d, P.y, false)); snprintf(a, sizeof a, "%s  %s", d->py, v); set_text(P.axy, P.dtxt[1], a);
+        snprintf(a, sizeof a, "WET  %d%%", (int)lroundf(wet_of(f) * 100));
+        if (set_text(P.axw, P.dtxt[2], a)) lv_obj_align(P.axw, LV_ALIGN_TOP_RIGHT, -6, 6);
     } else {
-        snprintf(a, sizeof a, "X  %d", (int)lroundf(P.x * 100)); lv_label_set_text(P.axx, a);
-        snprintf(a, sizeof a, "Y  %d", (int)lroundf(P.y * 100)); lv_label_set_text(P.axy, a);
-        lv_obj_add_flag(P.axw, LV_OBJ_FLAG_HIDDEN);
+        snprintf(a, sizeof a, "X  %d", (int)lroundf(P.x * 100));
+        if (set_text(P.axx, P.dtxt[0], a)) lv_obj_align(P.axx, LV_ALIGN_BOTTOM_RIGHT, -6, -4);
+        snprintf(a, sizeof a, "Y  %d", (int)lroundf(P.y * 100)); set_text(P.axy, P.dtxt[1], a);
     }
-    lv_obj_align(P.axx, LV_ALIGN_BOTTOM_RIGHT, -6, -4);
 }
 
 static void on_xy(lv_event_t *e) {
     LOCKED;
     lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) return;
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) { P.tn = 0; draw_pad(); return; }
     lv_point_t pt; lv_indev_get_point(lv_indev_active(), &pt);
     lv_area_t a; lv_obj_get_coords(P.xy, &a);
     float x = (float)(pt.x - a.x1) / XY_W, y = 1.f - (float)(pt.y - a.y1) / XY_H;
-    P.x = x < 0 ? 0 : x > 1 ? 1 : x; P.y = y < 0 ? 0 : y > 1 ? 1 : y;
+    x = x < 0 ? 0 : x > 1 ? 1 : x; y = y < 0 ? 0 : y > 1 ? 1 : y;
     if (code == LV_EVENT_PRESSED) P.tn = 0;
-    lv_point_precise_t q;
-    q.x = (lv_value_precise_t)(P.x * XY_W); q.y = (lv_value_precise_t)((1 - P.y) * XY_H);
-    if (P.tn < TRAIL_N) P.tp[P.tn++] = q; else { memmove(P.tp, P.tp + 1, sizeof(P.tp[0]) * (TRAIL_N - 1)); P.tp[TRAIL_N - 1] = q; }
+    else if (x == P.x && y == P.y) return;       /* the same point read again */
+    P.x = x; P.y = y;
+    /* A trail point every few pixels, newest first. */
+    const int qx = (int)(x * (XY_W - 1)), qy = (int)((1 - y) * (XY_H - 1));
+    if (!P.tn || abs(qx - P.tx[0]) + abs(qy - P.ty[0]) >= 8) {
+        memmove(P.tx + 1, P.tx, sizeof(int) * (TRAIL_N - 1)); memmove(P.ty + 1, P.ty, sizeof(int) * (TRAIL_N - 1));
+        P.tx[0] = qx; P.ty[0] = qy;
+        if (P.tn < TRAIL_N) P.tn++;
+    }
     draw_pad(); emit();
 }
 
@@ -224,16 +301,20 @@ static void build_pad(lv_obj_t *pg) {
     lv_obj_set_style_border_opa(P.xy, LV_OPA_COVER, 0); lv_obj_set_style_clip_corner(P.xy, true, 0);
     for (int i = 1; i < 8; i++) box(P.xy, i * XY_W / 8, 0, 1, XY_H, 0, C_LINE, LV_OPA_60);
     for (int i = 1; i < 4; i++) box(P.xy, 0, i * XY_H / 4, XY_W, 1, 0, C_LINE, LV_OPA_60);
-    P.trail = lv_line_create(P.xy);
-    lv_obj_set_style_line_width(P.trail, 3, 0); lv_obj_set_style_line_rounded(P.trail, true, 0); lv_obj_set_style_line_opa(P.trail, LV_OPA_50, 0);
-    P.vline = box(P.xy, 0, 0, 1, XY_H, 0, C_DIM, LV_OPA_50);
-    P.hline = box(P.xy, 0, 0, XY_W, 1, 0, C_DIM, LV_OPA_50);
+    for (int i = 0; i < TRAIL_N; i++) {
+        P.trail[i] = box(P.xy, 0, 0, 6, 6, LV_RADIUS_CIRCLE, C_DIM, (lv_opa_t)(150 - i * 25));
+        lv_obj_add_flag(P.trail[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    P.tick[0] = box(P.xy, 0, 0, 2, TICK, 1, C_DIM, LV_OPA_COVER);              /* top */
+    P.tick[1] = box(P.xy, 0, XY_H - TICK, 2, TICK, 1, C_DIM, LV_OPA_COVER);    /* bottom */
+    P.tick[2] = box(P.xy, 0, 0, TICK, 2, 1, C_DIM, LV_OPA_COVER);              /* left */
+    P.tick[3] = box(P.xy, XY_W - TICK, 0, TICK, 2, 1, C_DIM, LV_OPA_COVER);    /* right */
     P.halo = box(P.xy, 0, 0, 32, 32, LV_RADIUS_CIRCLE, C_DIM, LV_OPA_20);
     P.dot = box(P.xy, 0, 0, 12, 12, LV_RADIUS_CIRCLE, C_DIM, LV_OPA_TRANSP);
     lv_obj_set_style_border_width(P.dot, 2, 0);
     for (int s = 0; s < CP_FX_SLOTS; s++) {
-        P.chip[s] = box(P.xy, 6, 5, 18, 16, 3, C_LIME, LV_OPA_COVER);
-        P.chipl[s] = txt(P.chip[s], F10, C_INK, 0, 0, "1"); lv_obj_center(P.chipl[s]);
+        P.chip[s] = box(P.xy, 6, 5, 22, 16, 3, C_LIME, LV_OPA_COVER);
+        P.chipl[s] = txt(P.chip[s], F10, C_INK, 0, 0, "A1"); lv_obj_center(P.chipl[s]);
         P.name[s] = txt(P.xy, F14, C_TEXT, 28, 4, "");
     }
     P.hint = box(P.xy, 6, 5, 160, 16, 0, 0, LV_OPA_TRANSP);
@@ -242,7 +323,7 @@ static void build_pad(lv_obj_t *pg) {
     txt(P.hint, F10, C_DIM, 36, 2, "HOLD A PAD");
     P.axx = txt(P.xy, F10, C_TEXT, 0, 0, "");
     P.axy = txt(P.xy, F10, C_TEXT, 6, XY_H - 16, "");
-    P.axw = txt(P.xy, F10, C_TEXT, 0, 6, ""); lv_obj_align(P.axw, LV_ALIGN_TOP_RIGHT, -6, 6);
+    P.axw = txt(P.xy, F10, C_TEXT, 0, 6, "");
     lv_obj_add_flag(P.xy, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(P.xy, LV_OBJ_FLAG_GESTURE_BUBBLE);
     const lv_event_code_t ev[] = { LV_EVENT_PRESSED, LV_EVENT_PRESSING, LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST };
@@ -252,34 +333,44 @@ static void build_pad(lv_obj_t *pg) {
 static bool held_of(int idx);
 
 /* ---------- FX view ---------- */
+/* The bank on the pads, a tile a pad. */
 static void draw_fx(void) {
-    for (int i = 0; i < CP_FX_COUNT; i++) {
-        bool on = i == P.active, held = held_of(i);
-        set_bg(P.tile[i], held ? CAT_COL[FX[i].cat] : on ? C_LIME : C_PANEL);
+    const int base = P.bank * CP_FX_BANK;
+    const bool relabel = P.dbank != P.bank;
+    P.dbank = P.bank;
+    for (int i = 0; i < CP_FX_BANK; i++) {
+        const int f = base + i;
+        if (relabel) {
+            char b[16]; snprintf(b, sizeof b, "%c%d \xC2\xB7 %s", P.bank ? 'B' : 'A', i + 1, CAT_TAG[FX[f].cat]);
+            lv_label_set_text(P.tname[i], FX[f].name); lv_label_set_text(P.ttag[i], b);
+            set_bg(lv_obj_get_child(P.tile[i], 0), CAT_COL[FX[f].cat]);
+        }
+        bool on = f == P.active, held = held_of(f);
+        set_bg(P.tile[i], held ? CAT_COL[FX[f].cat] : on ? C_LIME : C_PANEL);
         set_fg(P.tname[i], (on || held) ? C_INK : C_TEXT); set_fg(P.ttag[i], (on || held) ? C_INK : C_DIM);
     }
 }
-static void on_tile(lv_event_t *e) { LOCKED; P.active = ud_of(e); draw_fx(); }
+static void on_tile(lv_event_t *e) { LOCKED; P.active = P.bank * CP_FX_BANK + ud_of(e); draw_fx(); }
 static void build_fx(lv_obj_t *pg) {
     const int W = 75, H = 27, G = 4;
-    for (int i = 0; i < CP_FX_COUNT; i++) {
+    for (int i = 0; i < CP_FX_BANK; i++) {
         int col = i % 4, row = 3 - i / 4;
         lv_obj_t *t = box(pg, col * (W + G), row * (H + G), W, H, 5, C_PANEL, LV_OPA_COVER);
-        box(t, 0, 0, 3, H, 0, CAT_COL[FX[i].cat], LV_OPA_COVER);
-        P.tname[i] = txt(t, F10, C_TEXT, 7, 2, FX[i].name);
-        char b[16]; snprintf(b, sizeof b, "%d \xC2\xB7 %s", i + 1, CAT_TAG[FX[i].cat]);
-        P.ttag[i] = txt(t, F10, C_DIM, 7, 14, b);
+        box(t, 0, 0, 3, H, 0, C_DIM, LV_OPA_COVER);
+        P.tname[i] = txt(t, F10, C_TEXT, 7, 2, "");
+        P.ttag[i] = txt(t, F10, C_DIM, 7, 14, "");
         lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(t, on_tile, LV_EVENT_SHORT_CLICKED, ud(i));
         P.tile[i] = t;
     }
+    P.dbank = -1;
 }
 
 /* ---------- EDIT view ---------- */
 static void draw_edit(void) {
     cp_fx_def_t *d = &FX[P.active]; char b[48], lo[12], hi[12];
     set_bg(P.echip, CAT_COL[d->cat]);
-    snprintf(b, sizeof b, "%d", P.active + 1); lv_label_set_text(lv_obj_get_child(P.echip, 0), b);
+    chip_name(b, sizeof b, P.active); lv_label_set_text(lv_obj_get_child(P.echip, 0), b);
     lv_label_set_text(P.ehead, d->name);
     for (int r = 0; r < 4; r++) {
         bool s = r == P.esel;
@@ -307,8 +398,8 @@ static void draw_edit(void) {
 }
 static void on_erow(lv_event_t *e) { LOCKED; P.esel = ud_of(e); draw_edit(); }
 static void build_edit(lv_obj_t *pg) {
-    P.echip = box(pg, 0, 1, 18, 16, 3, C_LIME, LV_OPA_COVER); lv_obj_center(txt(P.echip, F10, C_INK, 0, 0, "1"));
-    P.ehead = txt(pg, F14, C_TEXT, 24, 0, "");
+    P.echip = box(pg, 0, 1, 22, 16, 3, C_LIME, LV_OPA_COVER); lv_obj_center(txt(P.echip, F10, C_INK, 0, 0, "A1"));
+    P.ehead = txt(pg, F14, C_TEXT, 28, 0, "");
     static const char *L[] = { "X", "Y", "WET", "RELEASE" };
     for (int r = 0; r < 4; r++) {
         int y = r < 2 ? 22 + r * 32 : 86 + (r - 2) * 17, h = r < 2 ? 28 : 15;
@@ -405,7 +496,8 @@ static bool sk_on(sk_t k) {
         case SK_HOLD: return P.hold; case SK_SYNC: return P.sync; case SK_WET: return P.fullwet; case SK_LATCH: return P.latch;
         case SK_LIN: return !d->exp_curve; case SK_EXP: return d->exp_curve;
         case SK_SNAP: return d->release == CP_FX_REL_SNAP; case SK_TAIL: return d->release == CP_FX_REL_TAIL;
-        case SK_DRY: return P.monitor; case SK_PRE: return P.tap == CP_FX_TAP_PRE; case SK_POST: return P.tap == CP_FX_TAP_POST; case SK_MONO: return P.mono;
+        case SK_BANK: return P.bank == 1;
+        case SK_DRY: return P.monitor; case SK_PRE: return P.tap == CP_FX_TAP_PRE; case SK_MONO: return P.mono; case SK_USB: return P.usbrec;
         default: return false;
     }
 }
@@ -416,6 +508,7 @@ static void draw_sk(void) {
         set_bg(b, k == SK_KILL ? C_RED : on ? C_LIME : C_PANEL);
         set_fg(lv_obj_get_child(b, 0), (k == SK_KILL || on) ? C_INK : C_TEXT);
     }
+    lv_label_set_text(lv_obj_get_child(P.sk[SK_BANK], 0), P.bank ? "BANK B" : "BANK A");
 }
 static void release_all(void) { P.nheld = 0; emit(); }
 static void redraw(void) {
@@ -434,6 +527,7 @@ static void on_sk(lv_event_t *e) {
         case SK_TAP: if (P.acb) P.acb(CP_FX_ACT_TAP, P.auser); break;
         case SK_KILL: release_all(); if (P.acb) P.acb(CP_FX_ACT_KILL, P.auser); break;
         case SK_LATCH: P.latch = !P.latch; break;
+        case SK_BANK: P.bank ^= 1; P.dirty = true; changed(); break;   /* the pads' LEDs follow at the tick */
         case SK_CLEAR: release_all(); break;
         case SK_EXIT: if (P.acb) P.acb(CP_FX_ACT_EXIT, P.auser); break;
         case SK_SWAP: { const char *t = d->px; d->px = d->py; d->py = t; float a = d->x_lo, b = d->x_hi; d->x_lo = d->y_lo; d->x_hi = d->y_hi; d->y_lo = a; d->y_hi = b; emit(); changed(); } break;
@@ -442,9 +536,9 @@ static void on_sk(lv_event_t *e) {
         case SK_SNAP: d->release = CP_FX_REL_SNAP; changed(); break;
         case SK_TAIL: d->release = CP_FX_REL_TAIL; changed(); break;
         case SK_DRY: P.monitor = !P.monitor; changed(); break;
-        case SK_PRE: P.tap = CP_FX_TAP_PRE; changed(); break;
-        case SK_POST: P.tap = CP_FX_TAP_POST; changed(); break;
+        case SK_PRE: P.tap = P.tap == CP_FX_TAP_PRE ? CP_FX_TAP_POST : CP_FX_TAP_PRE; changed(); break;
         case SK_MONO: P.mono = !P.mono; changed(); break;
+        case SK_USB: if (P.acb) P.acb(CP_FX_ACT_USB, P.auser); break;
         case SK_RCLR: memset(P.send, 0, sizeof P.send); changed(); break;
         default: break;
     }
@@ -472,8 +566,10 @@ lv_obj_t *cp_fxpad_create(lv_obj_t *parent) {
     LOCKED;
     /* What the app restored before creating the screen stays: routes, sends,
      * the effects' ranges, SYNC, THRU, MONO. Everything else starts fresh. */
-    P.root = nullptr; P.nheld = 0; P.tabsel = CP_FX_TAB_PAD; P.active = 0; P.esel = 0; P.ssel = 0; P.tn = 0;
+    P.root = nullptr; P.nheld = 0; P.tabsel = CP_FX_TAB_PAD; P.active = P.bank * CP_FX_BANK; P.esel = 0; P.ssel = 0; P.tn = 0;
     P.x = .5f; P.y = .5f; P.hold = false; P.latch = false; P.dirty = false;
+    P.dpx = P.dpy = P.dkey = -1; memset(P.dtxt, 0, sizeof P.dtxt);
+    for (int8_t &f : P.padfx) f = -1;
     for (int i = 0; i < CP_FX_COUNT; i++) P.vel[i] = 76;   /* 60 % until the pad reports pressure */
     P.root = box(parent, 0, 0, 320, 200, 0, C_BG, LV_OPA_COVER);
     for (int t = 0; t < 4; t++) {
@@ -501,16 +597,21 @@ lv_obj_t *cp_fxpad_create(lv_obj_t *parent) {
 
 /* ---------- Hardware ---------- */
 void cp_fxpad_pad(int idx, bool down, uint8_t velocity) {
-    if (idx < 0 || idx >= CP_FX_COUNT) return;
+    if (idx < 0 || idx >= CP_FX_BANK) return;
     LOCKED;
-    int at = -1; for (int s = 0; s < P.nheld; s++) if (P.held[s] == idx) at = s;
+    /* The effect this pad started stays its own until let go, BANK or not. */
+    int fx = P.padfx[idx];
+    if (down && (fx < 0 || !held_of(fx))) fx = P.bank * CP_FX_BANK + idx;
+    if (fx < 0) return;
+    int at = -1; for (int s = 0; s < P.nheld; s++) if (P.held[s] == fx) at = s;
     if (down) {
-        P.vel[idx] = velocity ? velocity : P.vel[idx];
+        P.padfx[idx] = (int8_t)fx;
+        P.vel[fx] = velocity ? velocity : P.vel[fx];
         if (at < 0) {
             if (!P.latch || P.nheld >= CP_FX_SLOTS) { /* without LATCH one effect; with it two, oldest drops */
                 if (!P.latch) P.nheld = 0; else { memmove(P.held, P.held + 1, sizeof(int) * (CP_FX_SLOTS - 1)); P.nheld--; }
             }
-            P.held[P.nheld++] = idx; P.active = idx;
+            P.held[P.nheld++] = fx; P.active = fx;
         }
     } else if (at >= 0 && !P.hold) {
         memmove(P.held + at, P.held + at + 1, sizeof(int) * (P.nheld - at - 1)); P.nheld--;
@@ -527,14 +628,26 @@ bool cp_fxpad_tick(void) {
     return true;
 }
 static bool held_of(int idx) { for (int s = 0; s < P.nheld; s++) if (P.held[s] == idx) return true; return false; }
-bool cp_fxpad_pad_held(int idx) { LOCKED; return held_of(idx); }
-uint32_t cp_fxpad_pad_color(int idx) { return (idx >= 0 && idx < CP_FX_COUNT) ? CAT_COL[FX[idx].cat] : 0; }
+bool cp_fxpad_pad_held(int idx) {
+    if (idx < 0 || idx >= CP_FX_BANK) return false;
+    LOCKED;
+    return (P.padfx[idx] >= 0 && held_of(P.padfx[idx])) || held_of(P.bank * CP_FX_BANK + idx);
+}
+uint32_t cp_fxpad_pad_color(int idx) {
+    if (idx < 0 || idx >= CP_FX_BANK) return 0;
+    LOCKED;
+    return CAT_COL[FX[P.bank * CP_FX_BANK + idx].cat];
+}
 
 void cp_fxpad_encoder(int delta) {
     LOCKED;
     if (P.tabsel == CP_FX_TAB_EDIT) { P.esel = ((P.esel + delta) % 4 + 4) % 4; draw_edit(); }
     else if (P.tabsel == CP_FX_TAB_ROUTE) { int v = P.send[P.ssel] + delta * 5; P.send[P.ssel] = v < 0 ? 0 : v > 100 ? 100 : v; draw_route(); changed(); }
-    else if (P.tabsel == CP_FX_TAB_FX) { P.active = ((P.active + delta) % 16 + 16) % 16; draw_fx(); }
+    else if (P.tabsel == CP_FX_TAB_FX) {   /* over both banks; the grid and the pads follow the bank */
+        P.active = ((P.active + delta) % CP_FX_COUNT + CP_FX_COUNT) % CP_FX_COUNT;
+        if (P.active / CP_FX_BANK != P.bank) { P.bank = P.active / CP_FX_BANK; P.dirty = true; changed(); }
+        draw_fx(); draw_sk();
+    }
 }
 void cp_fxpad_encoder_click(void) {
     LOCKED;
@@ -568,3 +681,6 @@ void cp_fxpad_set_mono(bool on) { LOCKED; P.mono = on; }
 bool cp_fxpad_sync(void) { LOCKED; return P.sync; }
 void cp_fxpad_set_sync(bool on) { LOCKED; P.sync = on; }
 bool cp_fxpad_full_wet(void) { LOCKED; return P.fullwet; }
+int cp_fxpad_bank(void) { LOCKED; return P.bank; }
+void cp_fxpad_set_bank(int bank) { LOCKED; P.bank = bank ? 1 : 0; P.dirty = true; }
+void cp_fxpad_set_usb_rec(bool on) { LOCKED; if (P.usbrec == on) return; P.usbrec = on; if (P.root) draw_sk(); }

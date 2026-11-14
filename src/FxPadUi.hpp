@@ -13,7 +13,8 @@
 #include "lvgl.h"
 #include <cstdint>
 
-#define CP_FX_COUNT 16
+#define CP_FX_COUNT 32   /* two banks */
+#define CP_FX_BANK 16    /* effects a bank, a pad each */
 #define CP_FX_SLOTS 2
 
 enum cp_fx_cat_t { CP_FX_CAT_DLY, CP_FX_CAT_REV, CP_FX_CAT_FLT, CP_FX_CAT_MOD, CP_FX_CAT_GLT, CP_FX_CAT_DST };
@@ -38,8 +39,9 @@ struct cp_fx_def_t {
 /* Audio side: called whenever an effect slot changes.
  * fx = -1 means the slot is empty (dry). x, y already mapped through range + curve, 0..1. */
 typedef void (*cp_fxpad_param_cb_t)(int slot, int fx, float x, float y, float wet, void *user);
-/* A soft key the screen has no audio for of its own: TAP, KILL, and MAIN FW (back to the other firmware). */
-enum cp_fx_action_t { CP_FX_ACT_TAP, CP_FX_ACT_KILL, CP_FX_ACT_EXIT };
+/* A soft key the screen has no audio for of its own: TAP, KILL, MAIN FW (back to the other firmware)
+ * and USB REC (USB to its audio profile, so a phone or a computer records the FX). */
+enum cp_fx_action_t { CP_FX_ACT_TAP, CP_FX_ACT_KILL, CP_FX_ACT_EXIT, CP_FX_ACT_USB };
 typedef void (*cp_fxpad_action_cb_t)(cp_fx_action_t a, void *user);
 /* Anything a player would expect to find as they left it changed: a route,
  * a send, an effect's range, curve or release, SYNC, THRU, MONO. */
@@ -56,7 +58,7 @@ void cp_fxpad_set_changed_cb(cp_fxpad_changed_cb_t cb, void *user);
  * from the pads' own task: the effect starts at once, the screen follows at cp_fxpad_tick(). */
 void cp_fxpad_pad(int idx, bool down, uint8_t velocity);
 
-/* LED colour for a pad (RGB 0xRRGGBB) and whether it is held, for the pad LED driver. */
+/* LED colour for a pad of the bank on the pads (RGB 0xRRGGBB) and whether its effect is held. */
 uint32_t cp_fxpad_pad_color(int idx);
 bool cp_fxpad_pad_held(int idx);
 
@@ -65,6 +67,11 @@ void cp_fxpad_encoder(int delta);
 void cp_fxpad_encoder_click(void);
 
 void cp_fxpad_set_tab(cp_fx_tab_t t);
+/* The bank on the pads: 0 = A, 1 = B. */
+int cp_fxpad_bank(void);
+void cp_fxpad_set_bank(int bank);
+/* Whether USB is in its audio profile, for USB REC's key. */
+void cp_fxpad_set_usb_rec(bool on);
 cp_fx_def_t *cp_fxpad_def(int idx);
 /* ROUTE: several sources can feed the effect at once. send 0..100, 0 = not routed. */
 uint8_t cp_fxpad_send(cp_fx_src_t s);

@@ -15,19 +15,25 @@
 
 namespace fxpad {
 
-constexpr int kFxCount = 16;
+constexpr int kFxCount = 32;     // two banks of sixteen, a bank on the pads at a time
 constexpr int kSlots   = 2;
 
-/// The effects, in pad order (pad 1 = bottom left).
+/// The effects, in pad order (pad 1 = bottom left): bank A, then bank B --
+/// the ones that cut the sound up, for building a track live.
 enum Fx : int8_t {
     Echo, TapeEcho, PingPong, Roll,
     Hall, Shimmer, Freeze, Gate,
     LowPass, HighPass, BandSweep, Wah,
     Flanger, Phaser, Bitcrush, Drive,
+    Stutter, BeatRepeat, Glitch, Slicer,
+    Reverse, TapeStop, Spinback, Scratch,
+    Grain, Pitch, AutoFilter, Pump,
+    Lofi, RingMod, EchoFreeze, PanChop,
     None = -1
 };
 
 class Effect;
+struct Tape;
 
 class FxEngine final : public crosspad::IAudioNode {
 public:
@@ -69,6 +75,7 @@ private:
     std::atomic<uint32_t> running_{0};
 
     Effect* fx_[kFxCount] = {};
+    Tape* tape_ = nullptr;     // the last ~3 s of what came in, for the effects that cut it up
     uint32_t rate_ = 0;
     uint32_t stamp_ = 0;
     bool ready_ = false;

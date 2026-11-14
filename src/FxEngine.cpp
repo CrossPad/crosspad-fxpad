@@ -32,10 +32,70 @@ float rateSec(float x, float bpm, bool sync)
 /// SPEED of a modulation, in Hz: 0.05 .. 4.
 float speedHz(float x) { return 0.05f * std::pow(80.0f, x); }
 
+} // namespace
+
+/// What came in, the last 2.97 s of it at 44.1 kHz, written once a block
+/// before any effect runs: the effects that cut the sound up all read their
+/// slices from here instead of each keeping a buffer of its own. An effect
+/// playing a loop out of it holds it (Effect::holdsTape()), and then nothing
+/// is written over that loop until it lets go.
+struct Tape {
+    static constexpr uint32_t kFrames = 1u << 17;
+    static constexpr uint32_t kMask = kFrames - 1;
+    std::unique_ptr<float[]> buf;
+    uint32_t w = 0;                       // frames written since boot; the next one's index
+    bool init()
+    {
+        buf.reset(new (std::nothrow) float[kFrames * 2]);
+        if (!buf) return false;
+        std::memset(buf.get(), 0, kFrames * 2 * sizeof(float));
+        return true;
+    }
+    void write(const float* b, uint32_t n)
+    {
+        for (uint32_t i = 0; i < n; ++i, ++w) {
+            const uint32_t k = (w & kMask) * 2;
+            buf[k] = b[2 * i];
+            buf[k + 1] = b[2 * i + 1];
+        }
+    }
+    float at(uint32_t i, int ch) const { return buf[(i & kMask) * 2 + ch]; }
+    float read(uint32_t i, float f, int ch) const
+    {
+        const float a = at(i, ch);
+        return a + f * (at(i + 1, ch) - a);
+    }
+};
+
+namespace {
+
+/// The longest slice an effect takes from the tape, with room to spare.
+constexpr float kMaxSliceSec = 2.5f;
+
+/// SLICE: 1/8, 1/16, 1/32, 1/64 synced; 125 .. 15 ms free.
+constexpr float kSlice[] = {1.0f / 8, 1.0f / 16, 1.0f / 32, 1.0f / 64};
+float sliceSec(float x, float bpm, bool sync)
+{
+    if (sync) return kSlice[(int)std::lround(x * 3.0f)] * 240.0f / bpm;
+    return 0.125f * std::pow(0.12f, x);
+}
+
+/// LEN: 1/16, 1/8, 1/4, 1/2, a bar synced; 60 ms .. 2 s free. Never past
+/// what the tape holds.
+constexpr float kLen[] = {1.0f / 16, 1.0f / 8, 1.0f / 4, 1.0f / 2, 1.0f};
+float lenSec(float x, float bpm, bool sync)
+{
+    const float sec = sync ? kLen[(int)std::lround(x * 4.0f)] * 240.0f / bpm
+                           : 0.06f * std::pow(33.0f, x);
+    return std::min(sec, kMaxSliceSec);
+}
+
 struct Ctx {
     float rate;
     float bpm;
     bool  sync;
+    const Tape* tape;
+    uint32_t base;          // the tape's index of this block's first frame
 };
 
 /// A linear move from one block's value to the next, a sample at a time.
@@ -60,9 +120,10 @@ public:
     virtual bool init(float rate) = 0;
     /// A fresh start: old state forgotten, cheaply.
     virtual void start() {}
-    /// Every block, running or not, for an effect that needs what came
-    /// before it was started (ROLL).
-    virtual void listen(const float* buf, uint32_t n) { (void)buf; (void)n; }
+    /// While true, the tape is not written: a loop played out of it stays.
+    virtual bool holdsTape() const { return false; }
+    /// How fast X and Y follow the touch, seconds; SCRATCH wants the finger.
+    virtual float paramTau() const { return 0.03f; }
     /// The pad was let go and the effect rings out (gate closing).
     virtual void release() {}
     /// It has stopped: nothing is rendered until the next start().
@@ -199,40 +260,23 @@ private:
 };
 
 /// ROLL: what was just played, a note value long, repeated while the pad is
-/// held, each pass quieter by DECAY. It listens all the time so the loop is
-/// what came before the press.
+/// held, each pass quieter by DECAY -- out of the tape, held while it rolls.
 class RollFx final : public Effect {
 public:
     RollFx() : Effect(false) {}
-    bool init(float rate) override
-    {
-        rate_ = rate;
-        len_ = (uint32_t)(kMaxDelaySec * rate);
-        buf_.reset(new (std::nothrow) float[len_ * 2]);
-        if (!buf_) return false;
-        std::memset(buf_.get(), 0, len_ * 2 * sizeof(float));
-        return true;
-    }
+    bool init(float rate) override { (void)rate; return true; }
     void start() override { looping_ = false; }
     void stop() override { looping_ = false; }
-    void listen(const float* b, uint32_t n) override
-    {
-        if (looping_) return;                       // the loop's audio must stay put
-        for (uint32_t i = 0; i < n; ++i) {
-            buf_[2 * pos_] = b[2 * i];
-            buf_[2 * pos_ + 1] = b[2 * i + 1];
-            if (++pos_ == len_) pos_ = 0;
-        }
-    }
+    bool holdsTape() const override { return looping_; }
     float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp gate, Ramp wet, float dry) override
     {
         (void)gate; (void)dry;
         uint32_t loop = (uint32_t)(rateSec(x, c.bpm, c.sync) * c.rate);
-        loop = std::min<uint32_t>(std::max<uint32_t>(loop, 256), len_ / 2);
+        loop = std::min<uint32_t>(std::max<uint32_t>(loop, 256), (uint32_t)(kMaxSliceSec * c.rate));
         if (!looping_) {
             looping_ = true;
             loopLen_ = loop;
-            start_ = (pos_ + len_ - loop) % len_;
+            start_ = c.base - loop;
             at_ = 0;
             gain_ = 1.0f;
         }
@@ -240,31 +284,28 @@ public:
         constexpr uint32_t kEdge = 64;
         float peak = 0.0f;
         for (uint32_t i = 0; i < n; ++i) {
-            uint32_t idx = start_ + at_;
-            if (idx >= len_) idx -= len_;
             float edge = 1.0f;
             if (at_ < kEdge) edge = (float)at_ / kEdge;
             else if (at_ > loopLen_ - kEdge) edge = (float)(loopLen_ - at_) / kEdge;
             const float w = wet.next();
             for (int ch = 0; ch < 2; ++ch) {
-                const float r = buf_[2 * idx + ch] * gain_ * edge;
+                const float r = c.tape->at(start_ + at_, ch) * gain_ * edge;
                 b[2 * i + ch] = b[2 * i + ch] * (1.0f - w) + r * w;
                 peak = std::max(peak, std::fabs(r));
             }
             if (++at_ >= loopLen_) {                // a pass over: the next is quieter, a new RATE starts here
                 at_ = 0;
                 gain_ *= keep;
+                start_ += loopLen_ - loop;          // the same end, the new length
                 loopLen_ = loop;
-                start_ = (pos_ + len_ - loop) % len_;
             }
         }
         return peak;
     }
 
 private:
-    std::unique_ptr<float[]> buf_;
-    float rate_ = 44100.0f, gain_ = 1.0f;
-    uint32_t len_ = 0, pos_ = 0, start_ = 0, at_ = 0, loopLen_ = 1;
+    float gain_ = 1.0f;
+    uint32_t start_ = 0, at_ = 0, loopLen_ = 1;
     bool looping_ = false;
 };
 
@@ -701,6 +742,607 @@ private:
     float rate_ = 44100.0f;
 };
 
+// ── Bank B: cutting the sound up ───────────────────────────────────────────
+
+/// A fade in and out over @p e frames at the ends of a run @p len long.
+inline float edgeOf(uint32_t at, uint32_t len, uint32_t e)
+{
+    if (len <= 2 * e) e = len / 2 ? len / 2 : 1;
+    if (at < e) return (float)at / (float)e;
+    if (at + e > len) return (float)(len - at) / (float)e;
+    return 1.0f;
+}
+
+/// A playhead on the tape: a whole frame and a fraction.
+struct Head {
+    uint32_t i = 0;
+    float f = 0.0f;
+    void set(uint32_t at) { i = at; f = 0.0f; }
+    void move(float d)
+    {
+        f += d;
+        const float whole = std::floor(f);
+        i += (uint32_t)(int32_t)whole;
+        f -= whole;
+    }
+};
+
+/// xorshift32: GLITCH's and GRAIN's dice, no state beyond a word.
+struct Dice {
+    uint32_t s = 0x9E3779B9u;
+    uint32_t next() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
+    float unit() { return (float)(next() >> 8) / 16777216.0f; }
+};
+
+/// STUTTER: the last slice (1/8 .. 1/64) repeated while held, each repeat
+/// cut to GATE of its length -- the classic chopped retrigger.
+class StutterFx final : public Effect {
+public:
+    StutterFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { on_ = false; }
+    void stop() override { on_ = false; }
+    bool holdsTape() const override { return on_; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const uint32_t len = std::max<uint32_t>(64, (uint32_t)(sliceSec(x, c.bpm, c.sync) * c.rate));
+        if (!on_) { on_ = true; start_ = c.base - len; at_ = 0; len_ = len; }
+        const uint32_t open = std::max<uint32_t>(32, (uint32_t)((0.25f + 0.75f * clampf(y, 0.0f, 1.0f)) * len_));
+        for (uint32_t i = 0; i < n; ++i) {
+            const float env = at_ < open ? edgeOf(at_, open, 32) : 0.0f;
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float o = c.tape->at(start_ + at_, ch) * env;
+                b[2 * i + ch] = b[2 * i + ch] * (1.0f - w) + o * w;
+            }
+            if (++at_ >= len_) { at_ = 0; len_ = len; }
+        }
+        return 1.0f;
+    }
+
+private:
+    bool on_ = false;
+    uint32_t start_ = 0, at_ = 0, len_ = 1;
+};
+
+/// BEAT RPT: the last 1/16 .. a bar repeated, every pass STEP semitones
+/// higher or lower than the one before -- a riser or a drop out of a beat.
+class BeatRepeatFx final : public Effect {
+public:
+    BeatRepeatFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { on_ = false; }
+    void stop() override { on_ = false; }
+    bool holdsTape() const override { return on_; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const float len = std::max(64.0f, lenSec(x, c.bpm, c.sync) * c.rate);
+        if (!on_) { on_ = true; start_ = c.base - (uint32_t)len; pos_ = 0.0f; speed_ = 1.0f; }
+        const float step = std::round((clampf(y, 0.0f, 1.0f) - 0.5f) * 4.0f);   // -2 .. +2 semitones a pass
+        const float mul = std::pow(2.0f, step / 12.0f);
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t ip = (uint32_t)pos_;
+            const float env = edgeOf(ip, (uint32_t)len, 48);
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float o = c.tape->read(start_ + ip, pos_ - (float)ip, ch) * env;
+                b[2 * i + ch] = b[2 * i + ch] * (1.0f - w) + o * w;
+            }
+            pos_ += speed_;
+            if (pos_ >= len - 1.0f) { pos_ = 0.0f; speed_ = clampf(speed_ * mul, 0.25f, 4.0f); }
+        }
+        return 1.0f;
+    }
+
+private:
+    bool on_ = false;
+    uint32_t start_ = 0;
+    float pos_ = 0.0f, speed_ = 1.0f;
+};
+
+/// GLITCH: every slice, the dice decide -- by CHAOS -- whether it passes or
+/// is replaced by the slice before it played again, backwards, an octave up,
+/// an octave down, or silence.
+class GlitchFx final : public Effect {
+public:
+    GlitchFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { at_ = len_ = 0; mode_ = 0; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const uint32_t len = std::max<uint32_t>(128, (uint32_t)(sliceSec(x, c.bpm, c.sync) * c.rate));
+        const float chaos = clampf(y, 0.0f, 1.0f);
+        for (uint32_t i = 0; i < n; ++i) {
+            if (at_ >= len_) {
+                at_ = 0;
+                len_ = len;
+                src_ = c.base + i - len;                   // the slice just played
+                mode_ = dice_.unit() < chaos ? 1 + (int)(dice_.next() % 5) : 0;
+            }
+            const float w = wet.next();
+            if (mode_ != 0) {
+                const float env = edgeOf(at_, len_, 48);
+                for (int ch = 0; ch < 2; ++ch) {
+                    float o;
+                    switch (mode_) {
+                    case 1:  o = c.tape->at(src_ + at_, ch); break;                     // again
+                    case 2:  o = c.tape->at(src_ + len_ - 1 - at_, ch); break;          // backwards
+                    case 3:  o = c.tape->at(src_ + (2 * at_) % len_, ch); break;        // octave up
+                    case 4:  o = c.tape->at(src_ + at_ / 2, ch); break;                 // octave down
+                    default: o = 0.0f; break;                                          // silence
+                    }
+                    const float in = b[2 * i + ch];
+                    const float g = in * (1.0f - env) + o * env;
+                    b[2 * i + ch] = in * (1.0f - w) + g * w;
+                }
+            }
+            ++at_;
+        }
+        return 1.0f;
+    }
+
+private:
+    Dice dice_;
+    uint32_t at_ = 0, len_ = 0, src_ = 0;
+    int mode_ = 0;
+};
+
+/// SLICER: sixteenth-note patterns, eight of them on X, the off steps down
+/// by DEPTH.
+class SlicerFx final : public Effect {
+public:
+    SlicerFx() : Effect(false) {}
+    bool init(float rate) override { smooth_.setHz(500.0f, rate); return true; }
+    void start() override { phase_ = 0.0f; smooth_.z = 1.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        static const uint16_t kPat[8] = {
+            0b1010101010101010, 0b1110111011101110, 0b1001001010010010, 0b1111000011110000,
+            0b1011011010110110, 0b1100110011001100, 0b1000100010001000, 0b1110101110101100,
+        };
+        const uint16_t pat = kPat[(int)std::lround(clampf(x, 0.0f, 1.0f) * 7.0f)];
+        const float inc = 1.0f / ((1.0f / 16.0f) * 240.0f / c.bpm * c.rate);   // a step a sixteenth
+        const float depth = clampf(y, 0.0f, 1.0f);
+        for (uint32_t i = 0; i < n; ++i) {
+            phase_ += inc;
+            if (phase_ >= 16.0f) phase_ -= 16.0f;
+            const bool on = (pat >> (15 - (int)phase_)) & 1;
+            const float g = smooth_.lp(on ? 1.0f : 1.0f - depth);
+            const float w = wet.next();
+            const float k = 1.0f - w + w * g;
+            b[2 * i] *= k;
+            b[2 * i + 1] *= k;
+        }
+        return 1.0f;
+    }
+
+private:
+    float phase_ = 0.0f;
+    OnePole smooth_;
+};
+
+/// REVERSE: the last LEN played backwards, slice after slice, through TONE.
+class ReverseFx final : public Effect {
+public:
+    ReverseFx() : Effect(false) {}
+    bool init(float rate) override { rate_ = rate; return true; }
+    void start() override { at_ = len_ = 0; tone_[0].z = tone_[1].z = 0.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const uint32_t len = std::max<uint32_t>(256, (uint32_t)(lenSec(x, c.bpm, c.sync) * c.rate));
+        tone_[0].setHz(1000.0f * std::pow(16.0f, clampf(y, 0.0f, 1.0f)), rate_);
+        tone_[1].a = tone_[0].a;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (at_ >= len_) { at_ = 0; len_ = len; end_ = c.base + i; }
+            const float env = edgeOf(at_, len_, 128);
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float o = tone_[ch].lp(c.tape->at(end_ - 1 - at_, ch)) * env;
+                b[2 * i + ch] = b[2 * i + ch] * (1.0f - w) + o * w;
+            }
+            ++at_;
+        }
+        return 1.0f;
+    }
+
+private:
+    OnePole tone_[2];
+    float rate_ = 44100.0f;
+    uint32_t at_ = 0, len_ = 0, end_ = 0;
+};
+
+/// TAPE STOP: the sound slowing to a halt over TIME, CURVE from a straight
+/// run-down to a sudden one.
+class TapeStopFx final : public Effect {
+public:
+    TapeStopFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { on_ = false; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        if (!on_) { on_ = true; head_.set(c.base); t_ = 0.0f; }
+        const float total = std::max(0.05f, timeSec(x, c.bpm, c.sync)) * c.rate;
+        const float shape = 1.0f + 3.0f * clampf(y, 0.0f, 1.0f);
+        for (uint32_t i = 0; i < n; ++i) {
+            const float left = 1.0f - t_ / total;
+            const float speed = left > 0.0f ? std::pow(left, shape) : 0.0f;
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float o = speed > 0.0f ? c.tape->read(head_.i, head_.f, ch) * std::min(1.0f, speed * 8.0f) : 0.0f;
+                b[2 * i + ch] = b[2 * i + ch] * (1.0f - w) + o * w;
+            }
+            head_.move(speed);
+            t_ += 1.0f;
+        }
+        return 1.0f;
+    }
+
+private:
+    bool on_ = false;
+    Head head_;
+    float t_ = 0.0f;
+};
+
+/// SPINBACK: the tape pulled back fast, as a DJ rewinds a record, for TIME,
+/// then silence; SPEED is how fast it runs back.
+class SpinbackFx final : public Effect {
+public:
+    SpinbackFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { on_ = false; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        if (!on_) { on_ = true; head_.set(c.base); t_ = 0.0f; }
+        const float run = std::max(0.08f, timeSec(x, c.bpm, c.sync)) * c.rate;
+        const float back = 1.5f + 3.0f * clampf(y, 0.0f, 1.0f);
+        const float ramp = 0.12f * c.rate;
+        const uint32_t limit = (uint32_t)(kMaxSliceSec * c.rate);
+        for (uint32_t i = 0; i < n; ++i) {
+            const float speed = 1.0f - (1.0f + back) * std::min(1.0f, t_ / ramp);   // +1 down to -back
+            const uint32_t lag = (c.base + i) - head_.i;
+            const float env = t_ < run && lag < limit ? std::min(1.0f, (run - t_) / 2000.0f) : 0.0f;
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float o = env > 0.0f ? c.tape->read(head_.i, head_.f, ch) * env : 0.0f;
+                b[2 * i + ch] = b[2 * i + ch] * (1.0f - w) + o * w;
+            }
+            if (env > 0.0f) head_.move(speed);
+            t_ += 1.0f;
+        }
+        return 1.0f;
+    }
+
+private:
+    bool on_ = false;
+    Head head_;
+    float t_ = 0.0f;
+};
+
+/// SCRATCH: the last LENGTH as a record under the finger -- X is where the
+/// needle is, moving it plays the sound at the speed it moves, holding it
+/// still stops it.
+class ScratchFx final : public Effect {
+public:
+    ScratchFx() : Effect(false) {}
+    bool init(float rate) override { follow_ = 1.0f - std::exp(-1.0f / (0.008f * rate)); return true; }
+    void start() override { on_ = false; }
+    void stop() override { on_ = false; }
+    bool holdsTape() const override { return on_; }
+    float paramTau() const override { return 0.004f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const float len = std::max(256.0f, lenSec(y, c.bpm, c.sync) * c.rate);
+        if (!on_) { on_ = true; len_ = len; start_ = c.base - (uint32_t)len; pos_ = x * len; lastX_ = x; }
+        for (uint32_t i = 0; i < n; ++i) {
+            const float target = (lastX_ + (x - lastX_) * (float)(i + 1) / (float)n) * (len_ - 2.0f);
+            const float v = (target - pos_) * follow_;
+            pos_ += v;
+            const float gain = std::min(1.0f, std::fabs(v) * 3.0f);
+            const uint32_t ip = (uint32_t)std::max(0.0f, pos_);
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float o = c.tape->read(start_ + ip, pos_ - (float)ip, ch) * gain;
+                b[2 * i + ch] = b[2 * i + ch] * (1.0f - w) + o * w;
+            }
+        }
+        lastX_ = x;
+        return 1.0f;
+    }
+
+private:
+    bool on_ = false;
+    uint32_t start_ = 0;
+    float len_ = 1.0f, pos_ = 0.0f, lastX_ = 0.0f, follow_ = 0.01f;
+};
+
+/// GRAIN: a cloud of short grains (SIZE) picked at random out of the last
+/// half second, DENSITY of them a second, each panned somewhere of its own.
+class GrainFx final : public Effect {
+public:
+    GrainFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { for (auto& g : g_) g.left = 0; until_ = 0.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const uint32_t size = (uint32_t)((0.02f + 0.18f * clampf(x, 0.0f, 1.0f)) * c.rate);
+        const float every = c.rate / (5.0f + 55.0f * clampf(y, 0.0f, 1.0f));
+        for (uint32_t i = 0; i < n; ++i) {
+            if ((until_ -= 1.0f) <= 0.0f) {
+                until_ += every;
+                for (auto& g : g_) {
+                    if (g.left) continue;
+                    g.size = size;
+                    g.left = size;
+                    g.src = c.base + i - size - (uint32_t)(dice_.unit() * 0.5f * c.rate);
+                    g.pan = dice_.unit();
+                    break;
+                }
+            }
+            float l = 0.0f, r = 0.0f;
+            for (auto& g : g_) {
+                if (!g.left) continue;
+                const uint32_t at = g.size - g.left;
+                const float win = sin2pi(0.5f * (float)at / (float)g.size);    // sin(pi t): 0 .. 1 .. 0
+                const float s = 0.5f * (c.tape->at(g.src + at, 0) + c.tape->at(g.src + at, 1)) * std::fabs(win);
+                l += s * (1.0f - g.pan);
+                r += s * g.pan;
+                --g.left;
+            }
+            const float w = wet.next();
+            b[2 * i]     = b[2 * i] * (1.0f - w) + l * 0.9f * w;
+            b[2 * i + 1] = b[2 * i + 1] * (1.0f - w) + r * 0.9f * w;
+        }
+        return 1.0f;
+    }
+
+private:
+    struct G { uint32_t src = 0, size = 1, left = 0; float pan = 0.5f; };
+    G g_[6];
+    Dice dice_;
+    float until_ = 0.0f;
+};
+
+/// PITCH: -12 .. +12 semitones, FDBK sends the shifted sound round again
+/// so it keeps climbing (or falling).
+class PitchFx final : public Effect {
+public:
+    PitchFx() : Effect(false) {}
+    bool init(float rate) override
+    {
+        const uint32_t win = (uint32_t)(0.06f * rate);
+        return ps_[0].init(win) && ps_[1].init(win);
+    }
+    void start() override { ps_[0].clear(); ps_[1].clear(); fb_[0] = fb_[1] = 0.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        (void)c;
+        const float ratio = std::pow(2.0f, (std::round(clampf(x, 0.0f, 1.0f) * 24.0f) - 12.0f) / 12.0f);
+        ps_[0].setRatio(ratio);
+        ps_[1].setRatio(ratio);
+        const float fbk = clampf(y, 0.0f, 1.0f) * 0.7f;
+        for (uint32_t i = 0; i < n; ++i) {
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float in = b[2 * i + ch];
+                const float o = ps_[ch].tick(in + fb_[ch] * fbk);
+                fb_[ch] = o;
+                b[2 * i + ch] = in * (1.0f - w) + o * w;
+            }
+        }
+        return 1.0f;
+    }
+
+private:
+    PitchShift ps_[2];
+    float fb_[2] = {};
+};
+
+/// AUTO FILTER: a resonant low pass swept by a synced LFO, 200 Hz .. 8 kHz.
+class AutoFilterFx final : public Effect {
+public:
+    AutoFilterFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { f_[0].reset(); f_[1].reset(); phase_ = 0.75f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const float inc = 1.0f / (rateSec(x, c.bpm, c.sync) * 4.0f * c.rate);   // a sweep every four RATEs
+        const float res = clampf(y, 0.0f, 0.95f);
+        constexpr uint32_t kSub = 16;
+        for (uint32_t i0 = 0; i0 < n; i0 += kSub) {
+            phase_ += inc * kSub;
+            if (phase_ >= 1.0f) phase_ -= 1.0f;
+            f_[0].set(200.0f * std::pow(40.0f, 0.5f + 0.5f * sin2pi(phase_)), res, c.rate);
+            f_[1].a1 = f_[0].a1; f_[1].a2 = f_[0].a2; f_[1].a3 = f_[0].a3; f_[1].k = f_[0].k;
+            const uint32_t end = std::min(n, i0 + kSub);
+            for (uint32_t i = i0; i < end; ++i) {
+                const float w = wet.next();
+                for (int ch = 0; ch < 2; ++ch) {
+                    float lo, bp, hi;
+                    const float in = b[2 * i + ch];
+                    f_[ch].tick(in, lo, bp, hi);
+                    b[2 * i + ch] = in * (1.0f - w) + lo * w;
+                }
+            }
+        }
+        return 1.0f;
+    }
+
+private:
+    Svf f_[2];
+    float phase_ = 0.75f;
+};
+
+/// PUMP: sidechain ducking on the beat -- down by DEPTH at each RATE, back
+/// up over it.
+class PumpFx final : public Effect {
+public:
+    PumpFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { phase_ = 0.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const float inc = 1.0f / (rateSec(x, c.bpm, c.sync) * c.rate);
+        const float depth = clampf(y, 0.0f, 1.0f);
+        for (uint32_t i = 0; i < n; ++i) {
+            phase_ += inc;
+            if (phase_ >= 1.0f) phase_ -= 1.0f;
+            const float d = 1.0f - phase_;
+            const float g = 1.0f - depth * d * d * d;
+            const float w = wet.next();
+            const float k = 1.0f - w + w * g;
+            b[2 * i] *= k;
+            b[2 * i + 1] *= k;
+        }
+        return 1.0f;
+    }
+
+private:
+    float phase_ = 0.0f;
+};
+
+/// LOFI: an old sampler and a worn tape -- the rate and the bits down and
+/// the band narrowed by AGE, the pitch wavering by WOBBLE.
+class LofiFx final : public Effect {
+public:
+    LofiFx() : Effect(false) {}
+    bool init(float rate) override { rate_ = rate; return d_[0].init((uint32_t)(0.02f * rate)) && d_[1].init((uint32_t)(0.02f * rate)); }
+    void start() override { d_[0].clear(); d_[1].clear(); acc_ = 1.0f; held_[0] = held_[1] = 0.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        (void)c;
+        const float age = clampf(x, 0.0f, 1.0f);
+        const float hold = 1.0f + age * 5.0f;
+        const float step = 2.0f / std::pow(2.0f, 12.0f - age * 6.0f);
+        lp_[0].setHz(16000.0f * std::pow(0.16f, age), rate_);
+        hp_[0].setHz(50.0f + 350.0f * age, rate_);
+        lp_[1].a = lp_[0].a;
+        hp_[1].a = hp_[0].a;
+        const float depth = clampf(y, 0.0f, 1.0f) * 0.0025f * rate_;
+        const float inc = 0.8f / rate_;
+        for (uint32_t i = 0; i < n; ++i) {
+            wow_ += inc;
+            if (wow_ >= 1.0f) wow_ -= 1.0f;
+            const float dly = 2.0f + depth * (0.5f + 0.5f * sin2pi(wow_));
+            acc_ += 1.0f;
+            const bool take = acc_ >= hold;
+            if (take) acc_ -= hold;
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float in = b[2 * i + ch];
+                d_[ch].write(in);
+                if (take) held_[ch] = std::floor(d_[ch].read(dly) / step + 0.5f) * step;
+                const float lo = lp_[ch].lp(held_[ch]);
+                const float o = lo - hp_[ch].lp(lo);
+                b[2 * i + ch] = in * (1.0f - w) + o * w;
+            }
+        }
+        return 1.0f;
+    }
+
+private:
+    Delay d_[2];
+    OnePole lp_[2], hp_[2];
+    float rate_ = 44100.0f, acc_ = 1.0f, wow_ = 0.0f;
+    float held_[2] = {};
+};
+
+/// RING MOD: the input times a carrier at FREQ, SHAPE from a sine to a
+/// square: bells, robots, broken radios.
+class RingModFx final : public Effect {
+public:
+    RingModFx() : Effect(false) {}
+    bool init(float) override { return true; }
+    void start() override { phase_ = 0.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const float inc = 200.0f * std::pow(20.0f, clampf(x, 0.0f, 1.0f)) / c.rate;
+        const float sq = clampf(y, 0.0f, 1.0f);
+        for (uint32_t i = 0; i < n; ++i) {
+            phase_ += inc;
+            if (phase_ >= 1.0f) phase_ -= 1.0f;
+            const float s = sin2pi(phase_);
+            const float car = s * (1.0f - sq) + (s >= 0.0f ? 0.8f : -0.8f) * sq;
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float in = b[2 * i + ch];
+                b[2 * i + ch] = in * (1.0f - w) + in * car * w;
+            }
+        }
+        return 1.0f;
+    }
+
+private:
+    float phase_ = 0.0f;
+};
+
+/// ECHO FRZ: the last LEN frozen into a loop that plays under the live sound
+/// for as long as the pad is held, FADE a pass (none = for ever).
+class EchoFreezeFx final : public Effect {
+public:
+    EchoFreezeFx() : Effect(true) {}
+    bool init(float) override { return true; }
+    void start() override { on_ = false; }
+    void stop() override { on_ = false; }
+    bool holdsTape() const override { return on_; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float dry) override
+    {
+        if (!on_) {
+            on_ = true;
+            len_ = std::max<uint32_t>(512, (uint32_t)(lenSec(x, c.bpm, c.sync) * c.rate));
+            start_ = c.base - len_;
+            at_ = 0;
+            gain_ = 1.0f;
+        }
+        const float keep = 1.0f - 0.5f * clampf(y, 0.0f, 1.0f);
+        float peak = 0.0f;
+        for (uint32_t i = 0; i < n; ++i) {
+            const float env = edgeOf(at_, len_, 256) * gain_;
+            const float w = wet.next();
+            for (int ch = 0; ch < 2; ++ch) {
+                const float o = c.tape->at(start_ + at_, ch) * env;
+                b[2 * i + ch] = b[2 * i + ch] * dry + o * w;
+                peak = std::max(peak, std::fabs(o));
+            }
+            if (++at_ >= len_) { at_ = 0; gain_ *= keep; }
+        }
+        return peak;
+    }
+
+private:
+    bool on_ = false;
+    uint32_t start_ = 0, at_ = 0, len_ = 1;
+    float gain_ = 1.0f;
+};
+
+/// PAN CHOP: the sound thrown hard left and right on every SLICE, WIDTH how
+/// far.
+class PanChopFx final : public Effect {
+public:
+    PanChopFx() : Effect(false) {}
+    bool init(float rate) override { sm_[0].setHz(400.0f, rate); sm_[1] = sm_[0]; return true; }
+    void start() override { phase_ = 0.0f; sm_[0].z = sm_[1].z = 1.0f; }
+    float render(float* b, uint32_t n, const Ctx& c, float x, float y, Ramp, Ramp wet, float) override
+    {
+        const float inc = 1.0f / (sliceSec(x, c.bpm, c.sync) * 2.0f * c.rate);   // left and right a SLICE each
+        const float width = clampf(y, 0.0f, 1.0f);
+        for (uint32_t i = 0; i < n; ++i) {
+            phase_ += inc;
+            if (phase_ >= 1.0f) phase_ -= 1.0f;
+            const bool left = phase_ < 0.5f;
+            const float gl = sm_[0].lp(left ? 1.0f : 1.0f - width);
+            const float gr = sm_[1].lp(left ? 1.0f - width : 1.0f);
+            const float w = wet.next();
+            b[2 * i]     *= 1.0f - w + w * gl;
+            b[2 * i + 1] *= 1.0f - w + w * gr;
+        }
+        return 1.0f;
+    }
+
+private:
+    float phase_ = 0.0f;
+    OnePole sm_[2];
+};
+
 Effect* makeEffect(int fx)
 {
     switch (fx) {
@@ -720,6 +1362,22 @@ Effect* makeEffect(int fx)
     case Phaser:    return new (std::nothrow) PhaserFx();
     case Bitcrush:  return new (std::nothrow) BitcrushFx();
     case Drive:     return new (std::nothrow) DriveFx();
+    case Stutter:    return new (std::nothrow) StutterFx();
+    case BeatRepeat: return new (std::nothrow) BeatRepeatFx();
+    case Glitch:     return new (std::nothrow) GlitchFx();
+    case Slicer:     return new (std::nothrow) SlicerFx();
+    case Reverse:    return new (std::nothrow) ReverseFx();
+    case TapeStop:   return new (std::nothrow) TapeStopFx();
+    case Spinback:   return new (std::nothrow) SpinbackFx();
+    case Scratch:    return new (std::nothrow) ScratchFx();
+    case Grain:      return new (std::nothrow) GrainFx();
+    case Pitch:      return new (std::nothrow) PitchFx();
+    case AutoFilter: return new (std::nothrow) AutoFilterFx();
+    case Pump:       return new (std::nothrow) PumpFx();
+    case Lofi:       return new (std::nothrow) LofiFx();
+    case RingMod:    return new (std::nothrow) RingModFx();
+    case EchoFreeze: return new (std::nothrow) EchoFreezeFx();
+    case PanChop:    return new (std::nothrow) PanChopFx();
     default:        return nullptr;
     }
 }
@@ -741,11 +1399,13 @@ FxEngine::FxEngine()
     for (int f : {Roll, Gate, LowPass, HighPass, BandSweep, Wah, Bitcrush, Drive}) {
         snap_[f].store(true, std::memory_order_relaxed);
     }
+    for (int f = Stutter; f <= PanChop; ++f) snap_[f].store(true, std::memory_order_relaxed);   // bank B stops with the pad
 }
 
 FxEngine::~FxEngine()
 {
     for (auto* e : fx_) delete e;
+    delete tape_;
 }
 
 void FxEngine::setSlot(int slot, int fx, float x, float y, float wet)
@@ -769,6 +1429,10 @@ void FxEngine::onPrepare(uint32_t maxFrames, uint32_t sampleRate)
     if (ready_ && sampleRate == rate_) return;
     ready_ = false;
     rate_ = sampleRate;
+    if (!tape_) {
+        tape_ = new (std::nothrow) Tape();
+        if (tape_ && !tape_->init()) { delete tape_; tape_ = nullptr; }
+    }
     for (int f = 0; f < kFxCount; ++f) {
         delete fx_[f];
         fx_[f] = makeEffect(f);
@@ -784,11 +1448,9 @@ void FxEngine::process(const float* in, float* out, uint32_t frames)
 {
     const uint32_t samples = frames * 2;
     if (in != out) std::memcpy(out, in, samples * sizeof(float));
-    if (!ready_ || !rate_) return;
+    if (!ready_ || !rate_ || !tape_) return;
 
-    const Ctx ctx{(float)rate_, bpm_.load(std::memory_order_relaxed), sync_.load(std::memory_order_relaxed)};
     const float blockSec = (float)frames / (float)rate_;
-    const float kParam = 1.0f - std::exp(-blockSec / 0.03f);   // X / Y / WET follow over ~30 ms
     const float kGate  = 1.0f - std::exp(-blockSec / 0.01f);
     const float kFade  = 1.0f - std::exp(-blockSec / 0.005f);   // SNAP: gone in ~30 ms
 
@@ -803,7 +1465,13 @@ void FxEngine::process(const float* in, float* out, uint32_t frames)
             out[2 * i] = out[2 * i + 1] = m;
         }
     }
-    for (auto* e : fx_) if (e) e->listen(out, frames);
+    /* The tape takes this block before any effect runs -- unless a loop is
+     * being played out of it. */
+    bool hold = false;
+    for (auto* e : fx_) if (e && e->state != Effect::State::Off && e->holdsTape()) hold = true;
+    if (!hold) tape_->write(out, frames);
+    const Ctx ctx{(float)rate_, bpm_.load(std::memory_order_relaxed), sync_.load(std::memory_order_relaxed), tape_,
+                  tape_->w - frames};
 
     /* What the pads hold now, and each effect's state from it. */
     int held[kSlots];
@@ -864,6 +1532,7 @@ void FxEngine::process(const float* in, float* out, uint32_t frames)
         if (!thru && raw && !e->add() && e->state == Effect::State::On) twet = 1.0f;
         const float dry = (thru || !raw) ? 1.0f : 0.0f;
 
+        const float kParam = 1.0f - std::exp(-blockSec / e->paramTau());   // X / Y / WET follow over ~30 ms
         const float x = e->sx.step(tx, kParam);
         const float y = e->sy.step(ty, kParam);
         const float wet0 = e->swet.value;

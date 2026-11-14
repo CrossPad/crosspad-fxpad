@@ -20,6 +20,7 @@
 #include <crosspad/pad/PadManager.hpp>
 #include <crosspad/platform/IClock.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
+#include <crosspad/settings/CrosspadSettings.hpp>
 #include <crosspad/settings/IKeyValueStore.hpp>
 #include <crosspad/transport/Transport.hpp>
 
@@ -39,6 +40,10 @@ namespace {
 constexpr const char* kPadLogicName = "FxPad";
 constexpr const char* kNs = "fxpad";
 constexpr uint32_t kTickMs = 30;
+/* The screen's refresh while FX Pad runs: a finger on the XY pad is drawn
+ * every 16 ms instead of LVGL's 33 -- the pad redraws only the cursor's few
+ * small objects, so the SPI has the time. */
+constexpr uint32_t kRefreshMs = 16;
 
 fxpad::FxEngine s_engine;      // lives as long as the firmware: the render may hold it a block after detach
 
@@ -95,6 +100,7 @@ void save()
     kv->saveBool(kNs, "thru", cp_fxpad_dry_thru());
     kv->saveBool(kNs, "mono", cp_fxpad_mono());
     kv->saveBool(kNs, "sync", cp_fxpad_sync());
+    kv->saveU8(kNs, "bank", (uint8_t)cp_fxpad_bank());
     for (int f = 0; f < CP_FX_COUNT; ++f) {
         std::snprintf(key, sizeof key, "r%d", f);
         kv->saveBool(kNs, key, cp_fxpad_def(f)->release == CP_FX_REL_SNAP);
@@ -120,6 +126,7 @@ void restore()
     cp_fxpad_set_dry_thru(kv->readBool(kNs, "thru", cp_fxpad_dry_thru()));
     cp_fxpad_set_mono(kv->readBool(kNs, "mono", cp_fxpad_mono()));
     cp_fxpad_set_sync(kv->readBool(kNs, "sync", cp_fxpad_sync()));
+    cp_fxpad_set_bank(kv->readU8(kNs, "bank", 0));
     for (int f = 0; f < CP_FX_COUNT; ++f) {
         cp_fx_def_t* d = cp_fxpad_def(f);
         std::snprintf(key, sizeof key, "r%d", f);
@@ -168,6 +175,19 @@ void onAction(cp_fx_action_t a, void*)
         s_engine.kill();
         crosspad_gui::fwViewService().flowSwitchAndRestart(false);
         break;
+    case CP_FX_ACT_USB: {
+        /* USB REC: the USB audio profile (UAC2, class compliant), so a phone
+         * or a computer records what comes out of the effects; again, back to
+         * the data profile. The profile persists (usb_config_manager). */
+        crosspad::CrosspadSettings* cfg = crosspad::CrosspadSettings::getInstance();
+        const bool on = !(cfg && cfg->usbAudioEnabled);
+        if (on) {
+            cp_fxpad_set_out(CP_FX_OUT_USB, true);
+            onChanged(nullptr);
+        }
+        crosspad_gui::getGuiPlatform().setUsbAudioEnabled(on);
+        break;
+    }
     }
 }
 
@@ -185,7 +205,7 @@ lv_indev_t* navEncoder() { return crosspad_gui::getGuiPlatform().getNavigationEn
 void paintPads()
 {
     crosspad::PadManager& pm = crosspad::getPadManager();
-    for (uint8_t i = 0; i < CP_FX_COUNT; ++i) {
+    for (uint8_t i = 0; i < CP_FX_BANK; ++i) {
         const uint32_t c = cp_fxpad_pad_color(i);
         const int k = cp_fxpad_pad_held(i) ? 255 : 28;
         pm.setPadColor(i, crosspad::RgbColor((uint8_t)(((c >> 16) & 0xFF) * k / 255),
@@ -202,7 +222,15 @@ void tick(lv_timer_t*)
             cp_fxpad_set_available((cp_fx_src_t)s, b->sourceAvailable((crosspad::FxSource)s));
         }
     }
+    crosspad::CrosspadSettings* cfg = crosspad::CrosspadSettings::getInstance();
+    cp_fxpad_set_usb_rec(cfg && cfg->usbAudioEnabled);
     if (cp_fxpad_tick()) paintPads();
+}
+
+lv_timer_t* refreshTimer()
+{
+    lv_display_t* d = lv_display_get_default();
+    return d ? lv_display_get_refr_timer(d) : nullptr;
 }
 
 void onEncoderKey(lv_event_t* e)
@@ -255,6 +283,7 @@ lv_obj_t* lv_CreateFxPad(lv_obj_t* parent, App* app)
     if (crosspad::IFxBus* b = bus()) b->attach(&s_engine);
     paintPads();
     s_timer = lv_timer_create(tick, kTickMs, nullptr);
+    if (lv_timer_t* t = refreshTimer()) lv_timer_set_period(t, kRefreshMs);
     return root;
 }
 
@@ -264,6 +293,7 @@ void lv_DestroyFxPad(lv_obj_t* root)
         lv_timer_delete(s_timer);
         s_timer = nullptr;
     }
+    if (lv_timer_t* t = refreshTimer()) lv_timer_set_period(t, LV_DEF_REFR_PERIOD);
     if (crosspad::IFxBus* b = bus()) b->detach();
     s_engine.kill();
     crosspad_gui::ui_back_remove(s_backToken);

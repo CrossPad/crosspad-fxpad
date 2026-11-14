@@ -134,3 +134,43 @@ TEST_CASE("FX engine: block time on this host, the heaviest pair", "[fxpad][perf
                 1e6 * kBlock / kRate);
     CHECK(us < 1e6 * kBlock / kRate);
 }
+
+TEST_CASE("FX engine: TAPE STOP runs down to silence; SCRATCH is silent with the finger still", "[fxpad][bankb]")
+{
+    FxEngine e;
+    e.onPrepare(kBlock, kRate);
+    Source src;
+    play(e, src, 100);                                   // the tape has something on it
+    e.setSlot(0, TapeStop, 0.0f, 0.0f, 1.0f);            // the shortest run-down, a straight one
+    play(e, src, 200);                                   // ~290 ms: run down, WET settled
+    CHECK(play(e, src, 10).peak < 1e-2f);                // under -40 dB
+
+    e.kill();
+    e.setSlot(0, None, 0, 0, 0);
+    play(e, src, 5);
+    e.setSlot(0, Scratch, 0.5f, 0.5f, 1.0f);
+    play(e, src, 100);                                   // the needle has settled under the finger
+    CHECK(play(e, src, 10).peak < 1e-2f);
+}
+
+TEST_CASE("FX engine: STUTTER repeats one slice", "[fxpad][bankb]")
+{
+    FxEngine e;
+    e.onPrepare(kBlock, kRate);
+    Source src;
+    play(e, src, 50);
+    e.setSync(false);
+    e.setSlot(0, Stutter, 0.0f, 1.0f, 1.0f);             // a 125 ms slice, open all the way
+    std::vector<float> b(kBlock * 2), seq;
+    for (int k = 0; k < 600; ++k) {                      // ~870 ms
+        src.fill(b.data(), kBlock);
+        e.process(b.data(), b.data(), kBlock);
+        if (k >= 300) seq.insert(seq.end(), b.begin(), b.end());   // WET settled
+    }
+    const size_t slice = (size_t)(0.125f * kRate) * 2;  // stereo samples a slice
+    size_t same = 0, total = 0;
+    for (size_t i = 200; i + slice < seq.size(); i += 7, ++total) {
+        if (std::fabs(seq[i] - seq[i + slice]) < 1e-4f) ++same;
+    }
+    CHECK(same > total * 9 / 10);                        // what plays now played a slice ago
+}
