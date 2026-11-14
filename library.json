@@ -1,8 +1,8 @@
 {
     "name": "crosspad-fxpad",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "license": "GPL-3.0-or-later",
-    "description": "The board as a performance multi-effect: inputs through sixteen effects the pads hold",
+    "description": "The board as a performance multi-effect: inputs through thirty-two effects the pads hold",
     "keywords": [
         "crosspad",
         "fx",

@@ -1,8 +1,8 @@
 {
   "name": "FX Pad",
   "id": "fxpad",
-  "version": "0.2.0",
-  "description": "The board as a performance multi-effect: line 1/2, line 3/4, the mics and the computer through sixteen effects the pads hold, an XY surface for their parameters; the one app of the fxpad firmware kit",
+  "version": "0.2.1",
+  "description": "The board as a performance multi-effect: line 1/2, line 3/4, the mics and the computer through thirty-two effects in two banks the pads hold, an XY surface for their parameters; the one app of the fxpad firmware kit",
   "category": "audio",
   "icon": "fxpad.png",
   "component_path": "components/crosspad-fxpad",
@@ -17,6 +17,7 @@
     "crosspad-gui": ">=2.0.0,<3.0.0"
   },
   "changelog": [
+    "0.2.1: a finger run sideways across the XY pad stays on the pad -- the screen-wide back swipe took it as KILL and every effect stopped a short way into the gesture",
     "0.2.0: bank B -- sixteen effects that cut the sound up (stutter, beat repeat, glitch, slicer, reverse, tape stop, spinback, scratch, grain, pitch, auto filter, pump, lofi, ring mod, echo freeze, pan chop) on the last seconds of the input, BANK on FX; USB REC on ROUTE puts USB in its audio profile so a phone or a computer records the FX; the XY pad redraws only the cursor (edge ticks and dots instead of whole-pad lines) at a 16 ms refresh",
     "0.1.0: FX Pad: sixteen effects (echo, tape echo, ping pong, roll, hall, shimmer, freeze, gate, LP / HP filter, band sweep, wah, flanger, phaser, bitcrush, drive) on the pads, two at once with LATCH, X/Y on the touch surface, WET from the pad's pressure; TAIL or SNAP on release, synced to the tempo; ROUTE picks the sources (line 1/2, line 3/4, mics, USB), their sends, PRE/POST, MONO, THRU and the outputs (phones, line out, USB); over core 2.47's IFxBus"
   ]
