@@ -1418,6 +1418,14 @@ void FxEngine::setSlot(int slot, int fx, float x, float y, float wet)
     s.fx.store((int8_t)(fx >= 0 && fx < kFxCount ? fx : None), std::memory_order_release);
 }
 
+bool FxEngine::ringsOut(int fx)
+{
+    switch (fx) {
+    case Echo: case TapeEcho: case PingPong: case Hall: case Shimmer: case Freeze: case EchoFreeze: return true;
+    default: return false;
+    }
+}
+
 void FxEngine::setSnap(int fx, bool snap)
 {
     if (fx >= 0 && fx < kFxCount) snap_[fx].store(snap, std::memory_order_relaxed);

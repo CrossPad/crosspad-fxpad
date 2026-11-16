@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "FxPadUi.hpp"
+#include "FxEngine.hpp"
 
 #include "crosspad-gui/components/touch_gesture.h"
 
@@ -31,42 +32,7 @@
 static const uint32_t CAT_COL[] = { 0x4EA6D3, 0xA77BF0, 0xC6FF47, 0x4FE0B0, 0xFF5C5C, 0xFFC857 };
 static const char *CAT_TAG[] = { "DLY", "REV", "FLT", "MOD", "GLT", "DST" };
 
-/* In pad order, as fxpad::Fx has them. */
-static cp_fx_def_t FX[CP_FX_COUNT] = {
-    {"ECHO",CP_FX_CAT_DLY,"TIME","FDBK",0,1,0,.95f,false,CP_FX_REL_TAIL},
-    {"TAPE ECHO",CP_FX_CAT_DLY,"TIME","WOW",0,1,0,1,false,CP_FX_REL_TAIL},
-    {"PING PONG",CP_FX_CAT_DLY,"TIME","FDBK",0,1,0,.95f,false,CP_FX_REL_TAIL},
-    {"ROLL",CP_FX_CAT_GLT,"RATE","DECAY",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"HALL",CP_FX_CAT_REV,"SIZE","DAMP",0,1,0,1,false,CP_FX_REL_TAIL},
-    {"SHIMMER",CP_FX_CAT_REV,"SIZE","PITCH",0,1,0,1,false,CP_FX_REL_TAIL},
-    {"FREEZE",CP_FX_CAT_REV,"TONE","LEVEL",0,1,0,1,false,CP_FX_REL_TAIL},
-    {"GATE",CP_FX_CAT_GLT,"RATE","DEPTH",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"LP FILTER",CP_FX_CAT_FLT,"CUTOFF","RES",0,1,0,.9f,true,CP_FX_REL_SNAP},
-    {"HP FILTER",CP_FX_CAT_FLT,"CUTOFF","RES",0,1,0,.9f,true,CP_FX_REL_SNAP},
-    {"BAND SWEEP",CP_FX_CAT_FLT,"FREQ","WIDTH",0,1,0,1,true,CP_FX_REL_SNAP},
-    {"WAH",CP_FX_CAT_FLT,"FREQ","RES",0,1,0,.9f,true,CP_FX_REL_SNAP},
-    {"FLANGER",CP_FX_CAT_MOD,"SPEED","DEPTH",0,1,0,1,false,CP_FX_REL_TAIL},
-    {"PHASER",CP_FX_CAT_MOD,"SPEED","FDBK",0,1,0,.9f,false,CP_FX_REL_TAIL},
-    {"BITCRUSH",CP_FX_CAT_DST,"BITS","RATE",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"DRIVE",CP_FX_CAT_DST,"GAIN","TONE",0,1,0,1,false,CP_FX_REL_SNAP},
-    /* Bank B: the ones that cut the sound up, all on the last seconds of the input. */
-    {"STUTTER",CP_FX_CAT_GLT,"SLICE","GATE",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"BEAT RPT",CP_FX_CAT_GLT,"LEN","STEP",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"GLITCH",CP_FX_CAT_GLT,"SLICE","CHAOS",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"SLICER",CP_FX_CAT_GLT,"PATTERN","DEPTH",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"REVERSE",CP_FX_CAT_GLT,"LEN","TONE",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"TAPE STOP",CP_FX_CAT_GLT,"TIME","CURVE",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"SPINBACK",CP_FX_CAT_GLT,"TIME","BACK",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"SCRATCH",CP_FX_CAT_GLT,"POSITION","LEN",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"GRAIN",CP_FX_CAT_MOD,"SIZE","DENSITY",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"PITCH",CP_FX_CAT_MOD,"SHIFT","FDBK",0,1,0,.9f,false,CP_FX_REL_SNAP},
-    {"AUTO FLT",CP_FX_CAT_FLT,"RATE","RES",0,1,0,.9f,false,CP_FX_REL_SNAP},
-    {"PUMP",CP_FX_CAT_GLT,"RATE","DEPTH",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"LOFI",CP_FX_CAT_DST,"AGE","WOBBLE",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"RING MOD",CP_FX_CAT_DST,"FREQ","SHAPE",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"ECHO FRZ",CP_FX_CAT_DLY,"LEN","FADE",0,1,0,1,false,CP_FX_REL_SNAP},
-    {"PAN CHOP",CP_FX_CAT_GLT,"SLICE","WIDTH",0,1,0,1,false,CP_FX_REL_SNAP},
-};
+static cp_fx_def_t *const FX = cp_fx_table();
 static const char *SRC_NAME[] = { "IN 1/2", "IN 3/4", "MIC", "USB 1/2" };
 static const char *SRC_SUB[]  = { "Line", "Line", "Built-in", "Host" };
 static const char *OUT_NAME[] = { "OUT 1/2", "OUT 3/4", "USB" };
@@ -95,6 +61,7 @@ static struct {
      * style set invalidates its whole object, and the pad is 312 x 120. */
     int dpx, dpy, dkey; char dtxt[3][32];
     int dbank;                   /* the bank the FX grid shows */
+    int dtail;                   /* whether the TAIL key is drawn as available */
     /* FX */
     lv_obj_t *tile[CP_FX_BANK], *tname[CP_FX_BANK], *ttag[CP_FX_BANK];
     /* EDIT */
@@ -155,11 +122,7 @@ static void *ud(int i) { return (void *)(uintptr_t)i; }
 static int ud_of(lv_event_t *e) { return (int)(uintptr_t)lv_event_get_user_data(e); }
 static void changed(void) { if (P.ccb) P.ccb(P.cuser); }
 
-static float curve(const cp_fx_def_t *d, float v, bool isx) {
-    float lo = isx ? d->x_lo : d->y_lo, hi = isx ? d->x_hi : d->y_hi;
-    if (d->exp_curve && isx) v = v * v;
-    return lo + (hi - lo) * v;
-}
+static float curve(const cp_fx_def_t *d, float v, bool isx) { return cp_fx_curve(d, v, isx); }
 /* A parameter's value as the engine hears it (FxEngine.cpp's mappings). */
 static void fmt(char *b, size_t n, const char *p, float v) {
     static const char *T[] = { "1/32", "1/16", "1/8", "1/8 D", "1/4", "1/2" };
@@ -192,7 +155,11 @@ static float wet_of(int f) { return P.fullwet ? 1.0f : P.vel[f] / 127.f; }
 static void emit(void) {
     if (!P.cb) return;
     for (int s = 0; s < CP_FX_SLOTS; s++) {
-        if (s < P.nheld) { int f = P.held[s]; P.cb(s, f, curve(&FX[f], P.x, true), curve(&FX[f], P.y, false), wet_of(f), P.user); }
+        if (s < P.nheld) {
+            /* The engine's parameters are in its own order: a swapped effect takes the finger's Y first. */
+            int f = P.held[s]; float p1, p2; cp_fx_map(&FX[f], P.x, P.y, &p1, &p2);
+            P.cb(s, f, p1, p2, wet_of(f), P.user);
+        }
         else P.cb(s, -1, 0, 0, 0, P.user);
     }
 }
@@ -514,6 +481,9 @@ static void draw_sk(void) {
         set_fg(lv_obj_get_child(b, 0), (k == SK_KILL || on) ? C_INK : C_TEXT);
     }
     lv_label_set_text(lv_obj_get_child(P.sk[SK_BANK], 0), P.bank ? "BANK B" : "BANK A");
+    /* TAIL is there only for an effect that can ring out. */
+    const int tail = fxpad::FxEngine::ringsOut(P.active);
+    if (tail != P.dtail) { P.dtail = tail; lv_obj_set_style_opa(P.sk[SK_TAIL], tail ? LV_OPA_COVER : LV_OPA_40, 0); }
 }
 static void release_all(void) { P.nheld = 0; emit(); }
 static void redraw(void) {
@@ -535,11 +505,11 @@ static void on_sk(lv_event_t *e) {
         case SK_BANK: P.bank ^= 1; P.dirty = true; changed(); break;   /* the pads' LEDs follow at the tick */
         case SK_CLEAR: release_all(); break;
         case SK_EXIT: if (P.acb) P.acb(CP_FX_ACT_EXIT, P.auser); break;
-        case SK_SWAP: { const char *t = d->px; d->px = d->py; d->py = t; float a = d->x_lo, b = d->x_hi; d->x_lo = d->y_lo; d->x_hi = d->y_hi; d->y_lo = a; d->y_hi = b; emit(); changed(); } break;
+        case SK_SWAP: cp_fx_swap(d); emit(); changed(); break;
         case SK_LIN: d->exp_curve = false; emit(); changed(); break;
         case SK_EXP: d->exp_curve = true; emit(); changed(); break;
         case SK_SNAP: d->release = CP_FX_REL_SNAP; changed(); break;
-        case SK_TAIL: d->release = CP_FX_REL_TAIL; changed(); break;
+        case SK_TAIL: if (fxpad::FxEngine::ringsOut(P.active)) { d->release = CP_FX_REL_TAIL; changed(); } break;   /* else nothing to ring out: the key is dim */
         case SK_DRY: P.monitor = !P.monitor; changed(); break;
         case SK_PRE: P.tap = P.tap == CP_FX_TAP_PRE ? CP_FX_TAP_POST : CP_FX_TAP_PRE; changed(); break;
         case SK_MONO: P.mono = !P.mono; changed(); break;
@@ -573,7 +543,7 @@ lv_obj_t *cp_fxpad_create(lv_obj_t *parent) {
      * the effects' ranges, SYNC, THRU, MONO. Everything else starts fresh. */
     P.root = nullptr; P.nheld = 0; P.tabsel = CP_FX_TAB_PAD; P.active = P.bank * CP_FX_BANK; P.esel = 0; P.ssel = 0; P.tn = 0;
     P.x = .5f; P.y = .5f; P.hold = false; P.latch = false; P.dirty = false;
-    P.dpx = P.dpy = P.dkey = -1; memset(P.dtxt, 0, sizeof P.dtxt);
+    P.dpx = P.dpy = P.dkey = P.dtail = -1; memset(P.dtxt, 0, sizeof P.dtxt);
     for (int8_t &f : P.padfx) f = -1;
     for (int i = 0; i < CP_FX_COUNT; i++) P.vel[i] = 76;   /* 60 % until the pad reports pressure */
     P.root = box(parent, 0, 0, 320, 200, 0, C_BG, LV_OPA_COVER);
