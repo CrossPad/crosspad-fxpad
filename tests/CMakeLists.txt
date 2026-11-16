@@ -1,5 +1,5 @@
-# Host tests for the FX Pad's sound: the engine and its effects alone, no
-# LVGL, no board. Build and run:
+# Host tests for the FX Pad's sound: the engine and its effects, and the
+# screen's table of them (FxDef.hpp: axes, ranges, release) -- no LVGL, no board. Build and run:
 #   cmake -S tests -B tests/build && cmake --build tests/build && ctest --test-dir tests/build
 # crosspad-core is used for its headers; by default it is the sibling
 # component of a platform checkout, else pass -DCROSSPAD_CORE_DIR=<path>.
@@ -27,6 +27,7 @@ include(Catch)
 add_executable(crosspad_fxpad_tests
     test_fx_engine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/FxEngine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/FxDefs.cpp
 )
 target_include_directories(crosspad_fxpad_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src

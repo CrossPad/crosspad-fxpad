@@ -106,6 +106,8 @@ void save()
         kv->saveBool(kNs, key, cp_fxpad_def(f)->release == CP_FX_REL_SNAP);
         std::snprintf(key, sizeof key, "e%d", f);
         kv->saveBool(kNs, key, cp_fxpad_def(f)->exp_curve);
+        std::snprintf(key, sizeof key, "w%d", f);
+        kv->saveBool(kNs, key, cp_fxpad_def(f)->swap);
     }
 }
 
@@ -130,9 +132,13 @@ void restore()
     for (int f = 0; f < CP_FX_COUNT; ++f) {
         cp_fx_def_t* d = cp_fxpad_def(f);
         std::snprintf(key, sizeof key, "r%d", f);
-        d->release = kv->readBool(kNs, key, d->release == CP_FX_REL_SNAP) ? CP_FX_REL_SNAP : CP_FX_REL_TAIL;
+        /* TAIL kept from 0.2.1 for an effect that cannot ring out reads as SNAP: that is how it stopped. */
+        const bool snap = kv->readBool(kNs, key, d->release == CP_FX_REL_SNAP) || !fxpad::FxEngine::ringsOut(f);
+        d->release = snap ? CP_FX_REL_SNAP : CP_FX_REL_TAIL;
         std::snprintf(key, sizeof key, "e%d", f);
         d->exp_curve = kv->readBool(kNs, key, d->exp_curve);
+        std::snprintf(key, sizeof key, "w%d", f);
+        if (kv->readBool(kNs, key, d->swap) != d->swap) cp_fx_swap(d);
     }
 }
 

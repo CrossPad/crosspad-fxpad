@@ -44,8 +44,12 @@ public:
     /// Slot @p slot plays @p fx (None = empty) at X/Y 0..1 (mapped through
     /// the effect's range and curve already) and WET 0..1.
     void setSlot(int slot, int fx, float x, float y, float wet);
+    /// Whether @p fx has anything to ring out after its pad is let go: the
+    /// effects that add their wet signal to the dry (delays, reverbs, the
+    /// freezes). The others are the signal itself and fade at once, TAIL or not.
+    static bool ringsOut(int fx);
     /// How @p fx stops when its pad is let go: true = fade at once, false =
-    /// ring out.
+    /// ring out, where it can (ringsOut()).
     void setSnap(int fx, bool snap);
     /// Times and rates follow the tempo in note values; off, they run free.
     void setSync(bool on) { sync_.store(on, std::memory_order_relaxed); }

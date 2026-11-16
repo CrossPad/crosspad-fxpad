@@ -1,10 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "FxDef.hpp"
 #include "FxEngine.hpp"
 
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 using namespace fxpad;
@@ -173,4 +175,66 @@ TEST_CASE("FX engine: STUTTER repeats one slice", "[fxpad][bankb]")
         if (std::fabs(seq[i] - seq[i + slice]) < 1e-4f) ++same;
     }
     CHECK(same > total * 9 / 10);                        // what plays now played a slice ago
+}
+
+TEST_CASE("FX engine: TAIL rings out exactly the effects ringsOut() names; SNAP stops them all", "[fxpad][release]")
+{
+    for (int fx = 0; fx < kFxCount; ++fx) {
+        for (bool snap : {false, true}) {
+            FxEngine e;
+            e.onPrepare(kBlock, kRate);
+            Source src;
+            e.setSnap(fx, snap);
+            play(e, src, 50);
+            e.setSlot(0, fx, 0.5f, 0.5f, 1.0f);
+            play(e, src, 150);
+            e.setSlot(0, None, 0, 0, 0);
+            play(e, src, 150, false);                    // ~220 ms after the pad: a fade is long over
+            INFO("fx " << fx << " snap " << snap);
+            CHECK((e.running() != 0) == (!snap && FxEngine::ringsOut(fx)));
+        }
+    }
+}
+
+TEST_CASE("FX table: TAIL is the default only where the effect can ring out", "[fxpad][release]")
+{
+    const cp_fx_def_t* t = cp_fx_table();
+    for (int fx = 0; fx < CP_FX_COUNT; ++fx) {
+        INFO(t[fx].name);
+        CHECK((t[fx].release == CP_FX_REL_SNAP || FxEngine::ringsOut(fx)));
+        CHECK_FALSE(t[fx].swap);
+    }
+    CHECK(CP_FX_COUNT == kFxCount);
+}
+
+TEST_CASE("FX table: SWAP X/Y moves the parameters under the finger, not only their names", "[fxpad][swap]")
+{
+    cp_fx_def_t d = cp_fx_table()[Echo];                 // TIME on X 0..1, FDBK on Y 0..0.95
+    float p1 = 0, p2 = 0;
+    cp_fx_map(&d, 0.25f, 1.0f, &p1, &p2);
+    CHECK(p1 == 0.25f);                                  // the engine's first parameter: TIME
+    CHECK(p2 == 0.95f);
+
+    cp_fx_swap(&d);
+    CHECK(std::string(d.px) == "FDBK");
+    CHECK(std::string(d.py) == "TIME");
+    CHECK(d.x_hi == 0.95f);                              // the range went with its parameter
+    cp_fx_map(&d, 0.25f, 1.0f, &p1, &p2);
+    CHECK(p1 == 1.0f);                                   // TIME is the finger's Y now
+    CHECK(p2 == 0.25f * 0.95f);                          // FDBK its X, in FDBK's range
+    CHECK(cp_fx_curve(&d, 0.25f, true) == p2);           // what the screen prints beside "FDBK"
+
+    cp_fx_swap(&d);                                      // and back
+    cp_fx_map(&d, 0.25f, 1.0f, &p1, &p2);
+    CHECK(p1 == 0.25f);
+    CHECK(p2 == 0.95f);
+    CHECK_FALSE(d.swap);
+
+    cp_fx_def_t f = cp_fx_table()[LowPass];              // CUTOFF squared (EXP), RES 0..0.9
+    cp_fx_map(&f, 0.5f, 1.0f, &p1, &p2);
+    CHECK(p1 == 0.25f);
+    cp_fx_swap(&f);
+    cp_fx_map(&f, 1.0f, 0.5f, &p1, &p2);
+    CHECK(p1 == 0.25f);                                  // the curve stays with CUTOFF, on Y
+    CHECK(p2 == 0.9f);                                   // RES is linear on X
 }
