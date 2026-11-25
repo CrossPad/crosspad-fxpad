@@ -11,40 +11,28 @@
 #pragma once
 
 #include "lvgl.h"
+#include "FxDef.hpp"
 #include <cstdint>
 
-#define CP_FX_COUNT 32   /* two banks */
-#define CP_FX_BANK 16    /* effects a bank, a pad each */
-#define CP_FX_SLOTS 2
-
-enum cp_fx_cat_t { CP_FX_CAT_DLY, CP_FX_CAT_REV, CP_FX_CAT_FLT, CP_FX_CAT_MOD, CP_FX_CAT_GLT, CP_FX_CAT_DST };
 enum cp_fx_tab_t { CP_FX_TAB_PAD, CP_FX_TAB_FX, CP_FX_TAB_EDIT, CP_FX_TAB_ROUTE };
 /// The sources, in the order crosspad::FxSource has them.
 enum cp_fx_src_t { CP_FX_SRC_IN12, CP_FX_SRC_IN34, CP_FX_SRC_MIC, CP_FX_SRC_USB, CP_FX_SRC_COUNT };
 /// The outputs, in the order crosspad::FxOutput has them.
 enum cp_fx_out_t { CP_FX_OUT_12, CP_FX_OUT_34, CP_FX_OUT_USB, CP_FX_OUT_COUNT };
 enum cp_fx_tap_t { CP_FX_TAP_PRE, CP_FX_TAP_POST };   /* send taken before / after the source fader */
-enum cp_fx_release_t { CP_FX_REL_TAIL, CP_FX_REL_SNAP };
-
-struct cp_fx_def_t {
-    const char *name;
-    cp_fx_cat_t cat;
-    const char *px, *py;     /* parameter names on X and Y */
-    float x_lo, x_hi;        /* usable range of X, 0..1 of the full parameter */
-    float y_lo, y_hi;
-    bool exp_curve;
-    cp_fx_release_t release;
-};
 
 /* Audio side: called whenever an effect slot changes.
- * fx = -1 means the slot is empty (dry). x, y already mapped through range + curve, 0..1. */
+ * fx = -1 means the slot is empty (dry). x, y are the effect's first and second parameter (the engine's
+ * order, whichever axis of the surface each is on), already mapped through range + curve, 0..1. */
 typedef void (*cp_fxpad_param_cb_t)(int slot, int fx, float x, float y, float wet, void *user);
 /* A soft key the screen has no audio for of its own: TAP, KILL, MAIN FW (back to the other firmware)
  * and USB REC (USB to its audio profile, so a phone or a computer records the FX). */
 enum cp_fx_action_t { CP_FX_ACT_TAP, CP_FX_ACT_KILL, CP_FX_ACT_EXIT, CP_FX_ACT_USB };
 typedef void (*cp_fxpad_action_cb_t)(cp_fx_action_t a, void *user);
 /* Anything a player would expect to find as they left it changed: a route,
- * a send, an effect's range, curve or release, SYNC, THRU, MONO. */
+ * a send, an effect's axes, range, curve or release, SYNC, THRU, MONO.
+ * Called from cp_fxpad_tick() on LVGL's thread, outside the lock the pads
+ * take: a save never holds up a pad. */
 typedef void (*cp_fxpad_changed_cb_t)(void *user);
 
 lv_obj_t *cp_fxpad_create(lv_obj_t *parent);
@@ -61,6 +49,10 @@ void cp_fxpad_pad(int idx, bool down, uint8_t velocity);
 /* LED colour for a pad of the bank on the pads (RGB 0xRRGGBB) and whether its effect is held. */
 uint32_t cp_fxpad_pad_color(int idx);
 bool cp_fxpad_pad_held(int idx);
+
+/* Every held effect let go (HOLD and LATCH included), as KILL does; the
+ * caller then cuts the engine's tails. */
+void cp_fxpad_kill(void);
 
 /* Encoder: EDIT row / ROUTE send level of the selected source. Click: PAD → FX → EDIT → PAD, ROUTE → source on/off. */
 void cp_fxpad_encoder(int delta);

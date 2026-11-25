@@ -9,12 +9,13 @@ building a track live. The one app of the `fxpad` firmware kit.
 - Hold a pad: its effect is on. Touch the XY surface: its two parameters. The
   pad's pressure is WET. LATCH: two effects at once; HOLD: they stay after the
   pad is let go; KILL (or the power button's click): everything off.
-- FX picks an effect to edit and the bank on the pads (BANK), EDIT sets its curve and how it stops (TAIL rings
-  out, SNAP fades at once), ROUTE the sources, their sends, PRE/POST, MONO,
+- FX picks an effect to edit and the bank on the pads (BANK), EDIT swaps its two parameters between the
+  axes (SWAP X/Y), sets its curve and how it stops (TAIL rings out, on the delays, the reverbs and the
+  freezes; SNAP fades at once), ROUTE the sources, their sends, PRE/POST, MONO,
   THRU and the outputs; USB REC puts USB in its audio profile so a phone or a
   computer records the effects.
 
-Needs crosspad-core 2.47 (`IFxBus`) and a platform that provides it
+Needs crosspad-core 2.48 (`IFxBus`) and a platform that provides it
 (platform-idf: the mixer's FX bus). Design and numbers:
 `docs/subsystems/fx-pad.md` in platform-idf.
 
