@@ -187,10 +187,7 @@ void onAction(cp_fx_action_t a, void*)
          * the data profile. The profile persists (usb_config_manager). */
         crosspad::CrosspadSettings* cfg = crosspad::CrosspadSettings::getInstance();
         const bool on = !(cfg && cfg->usbAudioEnabled);
-        if (on) {
-            cp_fxpad_set_out(CP_FX_OUT_USB, true);
-            onChanged(nullptr);
-        }
+        if (on) cp_fxpad_set_out(CP_FX_OUT_USB, true);   /* applied and kept at the next tick */
         crosspad_gui::getGuiPlatform().setUsbAudioEnabled(on);
         break;
     }
@@ -201,7 +198,6 @@ void onAction(cp_fx_action_t a, void*)
 
 lv_timer_t* s_timer = nullptr;
 lv_group_t* s_group = nullptr;
-lv_group_t* s_prevGroup = nullptr;
 lv_obj_t* s_input = nullptr;
 uint32_t s_backToken = 0;
 
@@ -248,9 +244,11 @@ void onEncoderKey(lv_event_t* e)
     else cp_fxpad_encoder(k == LV_KEY_RIGHT ? 1 : -1);
 }
 
-/* The power button's click: every effect off, tails cut. */
+/* The power button's click: every effect off, tails cut -- held, HOLD and
+ * LATCH ones too, or the engine would start them again in the next block. */
 bool onPowerBack(void*)
 {
+    cp_fxpad_kill();
     s_engine.kill();
     return true;
 }
@@ -273,10 +271,7 @@ lv_obj_t* lv_CreateFxPad(lv_obj_t* parent, App* app)
     lv_group_add_obj(s_group, s_input);
     lv_obj_add_event_cb(s_input, onEncoderKey, static_cast<lv_event_code_t>(LV_EVENT_KEY | LV_EVENT_PREPROCESS),
                         nullptr);
-    if (lv_indev_t* nav = navEncoder()) {
-        s_prevGroup = lv_indev_get_group(nav);
-        lv_indev_set_group(nav, s_group);
-    }
+    if (lv_indev_t* nav = navEncoder()) lv_indev_set_group(nav, s_group);   /* the framework restores the previous one */
     lv_group_focus_obj(s_input);
     lv_group_set_editing(s_group, true);
     s_backToken = crosspad_gui::ui_back_push(onPowerBack, nullptr);
@@ -301,12 +296,13 @@ void lv_DestroyFxPad(lv_obj_t* root)
     }
     if (lv_timer_t* t = refreshTimer()) lv_timer_set_period(t, LV_DEF_REFR_PERIOD);
     if (crosspad::IFxBus* b = bus()) b->detach();
+    cp_fxpad_kill();
     s_engine.kill();
+    save();   /* a change the last tick did not reach yet */
     crosspad_gui::ui_back_remove(s_backToken);
     s_backToken = 0;
-    if (lv_indev_t* nav = navEncoder()) lv_indev_restore_group(nav, s_prevGroup);
     if (s_group) {
-        lv_group_delete(s_group);
+        lv_group_delete_deferred(s_group);
         s_group = nullptr;
     }
     s_input = nullptr;

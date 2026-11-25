@@ -30,7 +30,9 @@ typedef void (*cp_fxpad_param_cb_t)(int slot, int fx, float x, float y, float we
 enum cp_fx_action_t { CP_FX_ACT_TAP, CP_FX_ACT_KILL, CP_FX_ACT_EXIT, CP_FX_ACT_USB };
 typedef void (*cp_fxpad_action_cb_t)(cp_fx_action_t a, void *user);
 /* Anything a player would expect to find as they left it changed: a route,
- * a send, an effect's axes, range, curve or release, SYNC, THRU, MONO. */
+ * a send, an effect's axes, range, curve or release, SYNC, THRU, MONO.
+ * Called from cp_fxpad_tick() on LVGL's thread, outside the lock the pads
+ * take: a save never holds up a pad. */
 typedef void (*cp_fxpad_changed_cb_t)(void *user);
 
 lv_obj_t *cp_fxpad_create(lv_obj_t *parent);
@@ -47,6 +49,10 @@ void cp_fxpad_pad(int idx, bool down, uint8_t velocity);
 /* LED colour for a pad of the bank on the pads (RGB 0xRRGGBB) and whether its effect is held. */
 uint32_t cp_fxpad_pad_color(int idx);
 bool cp_fxpad_pad_held(int idx);
+
+/* Every held effect let go (HOLD and LATCH included), as KILL does; the
+ * caller then cuts the engine's tails. */
+void cp_fxpad_kill(void);
 
 /* Encoder: EDIT row / ROUTE send level of the selected source. Click: PAD → FX → EDIT → PAD, ROUTE → source on/off. */
 void cp_fxpad_encoder(int delta);

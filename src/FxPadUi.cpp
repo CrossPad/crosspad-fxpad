@@ -81,6 +81,7 @@ static struct {
     float x, y;                  /* 0..1, y = 0 at bottom */
     bool hold, sync, latch, monitor, fullwet;
     bool dirty;                  /* the pads changed what is held: redraw at the next tick */
+    bool pending;                /* a setting changed: the changed callback runs at the next tick */
     cp_fxpad_param_cb_t cb; void *user;
     cp_fxpad_action_cb_t acb; void *auser;
     cp_fxpad_changed_cb_t ccb; void *cuser;
@@ -120,7 +121,7 @@ static void set_bg(lv_obj_t *o, uint32_t c) { lv_obj_set_style_bg_color(o, hx(c)
 static void set_fg(lv_obj_t *o, uint32_t c) { lv_obj_set_style_text_color(o, hx(c), 0); }
 static void *ud(int i) { return (void *)(uintptr_t)i; }
 static int ud_of(lv_event_t *e) { return (int)(uintptr_t)lv_event_get_user_data(e); }
-static void changed(void) { if (P.ccb) P.ccb(P.cuser); }
+static void changed(void) { P.pending = true; }
 
 static float curve(const cp_fx_def_t *d, float v, bool isx) { return cp_fx_curve(d, v, isx); }
 /* A parameter's value as the engine hears it (FxEngine.cpp's mappings). */
@@ -513,7 +514,7 @@ static void on_sk(lv_event_t *e) {
         case SK_DRY: P.monitor = !P.monitor; changed(); break;
         case SK_PRE: P.tap = P.tap == CP_FX_TAP_PRE ? CP_FX_TAP_POST : CP_FX_TAP_PRE; changed(); break;
         case SK_MONO: P.mono = !P.mono; changed(); break;
-        case SK_USB: if (P.acb) P.acb(CP_FX_ACT_USB, P.auser); break;
+        case SK_USB: if (P.acb) P.acb(CP_FX_ACT_USB, P.auser); changed(); break;
         case SK_RCLR: memset(P.send, 0, sizeof P.send); changed(); break;
         default: break;
     }
@@ -596,12 +597,21 @@ void cp_fxpad_pad(int idx, bool down, uint8_t velocity) {
 }
 
 bool cp_fxpad_tick(void) {
-    LOCKED;
-    if (!P.dirty || !P.root) return false;
-    P.dirty = false;
-    if (P.tabsel == CP_FX_TAB_PAD) draw_pad(); else if (P.tabsel == CP_FX_TAB_FX) draw_fx(); else if (P.tabsel == CP_FX_TAB_EDIT) draw_edit();
-    return true;
+    bool drew = false, notify = false;
+    {
+        LOCKED;
+        notify = P.pending;
+        P.pending = false;
+        if (P.dirty && P.root) {
+            P.dirty = false;
+            if (P.tabsel == CP_FX_TAB_PAD) draw_pad(); else if (P.tabsel == CP_FX_TAB_FX) draw_fx(); else if (P.tabsel == CP_FX_TAB_EDIT) draw_edit();
+            drew = true;
+        }
+    }
+    if (notify && P.ccb) P.ccb(P.cuser);
+    return drew;
 }
+void cp_fxpad_kill(void) { LOCKED; release_all(); P.dirty = true; }
 static bool held_of(int idx) { for (int s = 0; s < P.nheld; s++) if (P.held[s] == idx) return true; return false; }
 bool cp_fxpad_pad_held(int idx) {
     if (idx < 0 || idx >= CP_FX_BANK) return false;
