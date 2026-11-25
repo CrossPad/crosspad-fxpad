@@ -16,7 +16,8 @@ building a track live. The one app of the `fxpad` firmware kit.
   computer records the effects.
 
 Needs crosspad-core 2.48 (`IFxBus`) and a platform that provides it
-(platform-idf: the mixer's FX bus). Design and numbers:
+(platform-idf: the mixer's FX bus; crosspad-pc: `src/audio/PcFxBus.cpp`, kit
+`fxpad`). Design and numbers:
 `docs/subsystems/fx-pad.md` in platform-idf.
 
 Host tests of the effects:
