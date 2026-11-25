@@ -15,7 +15,7 @@ building a track live. The one app of the `fxpad` firmware kit.
   THRU and the outputs; USB REC puts USB in its audio profile so a phone or a
   computer records the effects.
 
-Needs crosspad-core 2.47 (`IFxBus`) and a platform that provides it
+Needs crosspad-core 2.48 (`IFxBus`) and a platform that provides it
 (platform-idf: the mixer's FX bus). Design and numbers:
 `docs/subsystems/fx-pad.md` in platform-idf.
 

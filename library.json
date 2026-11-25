@@ -11,7 +11,7 @@
         "audio"
     ],
     "dependencies": {
-        "crosspad-core": ">=2.47.0,<3.0.0",
+        "crosspad-core": ">=2.48.0,<3.0.0",
         "crosspad-gui": ">=2.0.0,<3.0.0"
     }
 }
