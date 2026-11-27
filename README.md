@@ -20,7 +20,9 @@ Needs crosspad-core 2.48 (`IFxBus`) and a platform that provides it
 `fxpad`). Design and numbers:
 `docs/subsystems/fx-pad.md` in platform-idf.
 
-Host tests of the effects:
+Host tests of the effects, and of the screen on LVGL (a buffer for a display,
+a scripted finger: nothing on any tab is cut by what it sits in;
+`FXPAD_UI_SHOTS=<dir>` writes each tab as a `.ppm`):
 
 ```
 cmake -S tests -B tests/build && cmake --build tests/build && ctest --test-dir tests/build
