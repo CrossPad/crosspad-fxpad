@@ -37,7 +37,8 @@ static const char *SRC_NAME[] = { "IN 1/2", "IN 3/4", "MIC", "USB 1/2" };
 static const char *SRC_SUB[]  = { "Line", "Line", "Built-in", "Host" };
 static const char *OUT_NAME[] = { "OUT 1/2", "OUT 3/4", "USB" };
 static const char *OUT_SUB[]  = { "Phones", "Line", "Rec" };
-static const int OUT_Y[] = { 4, 53, 102 };
+#define OUT_H 36
+static const int OUT_Y[] = { 2, 42, 82 };   /* three of OUT_H in the page's 120, the middle one level with the FX box */
 static const char *TAB_NAME[] = { "PAD", "FX", "EDIT", "ROUTE" };
 
 /* Soft keys: each tab's own, spread over the width. */
@@ -360,7 +361,8 @@ static void draw_edit(void) {
         snprintf(b, sizeof b, "%s  %s\xE2\x80\x93%s", p, lo, hi); lv_label_set_text(P.eval[a], b);
         bool s = a == P.esel;
         set_bg(P.ebar[a], s ? C_INK : C_WELL); lv_obj_set_style_bg_opa(P.ebar[a], s ? LV_OPA_20 : LV_OPA_COVER, 0);
-        lv_obj_set_x(P.erng[a], (int)(l * 120)); lv_obj_set_width(P.erng[a], (int)((h - l) * 120) + 1);
+        const int rx = (int)(l * 120), rw = (int)((h - l) * 120) + 1;
+        lv_obj_set_x(P.erng[a], rx); lv_obj_set_width(P.erng[a], rx + rw > 120 ? 120 - rx : rw);   /* inside the 120 px bar */
         set_bg(P.erng[a], s ? C_INK : CAT_COL[d->cat]);
     }
     if (P.fullwet) snprintf(b, sizeof b, "100%%");
@@ -445,14 +447,14 @@ static void build_route(lv_obj_t *pg) {
         P.src[i] = r;
     }
     for (int o = 0; o < CP_FX_OUT_COUNT; o++) {
-        P.op[o][0].x = 246; P.op[o][0].y = 60; P.op[o][1].x = 256; P.op[o][1].y = OUT_Y[o] + 18;
+        P.op[o][0].x = 246; P.op[o][0].y = 60; P.op[o][1].x = 256; P.op[o][1].y = OUT_Y[o] + OUT_H / 2;
         P.oln[o] = mkline(pg, P.op[o]);
     }
     lv_obj_t *fx = box(pg, 200, 39, 46, 42, 6, C_LIME, LV_OPA_COVER);
     lv_obj_t *f1 = txt(fx, F14, C_INK, 0, 0, "FX"); lv_obj_align(f1, LV_ALIGN_CENTER, 0, -6);
     lv_obj_t *f2 = txt(fx, F10, C_INK, 0, 0, "PAD"); lv_obj_align(f2, LV_ALIGN_CENTER, 0, 9);
     for (int o = 0; o < CP_FX_OUT_COUNT; o++) {
-        lv_obj_t *b = box(pg, 256, OUT_Y[o], 56, 36, 5, C_PANEL, LV_OPA_COVER);
+        lv_obj_t *b = box(pg, 256, OUT_Y[o], 56, OUT_H, 5, C_PANEL, LV_OPA_COVER);
         lv_obj_set_style_border_color(b, hx(C_LIME), 0);
         lv_obj_t *l = txt(b, F10, C_TEXT, 0, 0, OUT_NAME[o]); lv_obj_align(l, LV_ALIGN_CENTER, 0, -6);
         lv_obj_t *s = txt(b, F10, C_DIM, 0, 0, OUT_SUB[o]); lv_obj_align(s, LV_ALIGN_CENTER, 0, 7);

@@ -3,6 +3,7 @@
 
 /* In pad order, as fxpad::Fx has them. TAIL only on the effects that add their
  * wet signal to the dry (FxEngine::ringsOut): the others have nothing to ring out. */
+/* A name is at most 68 px in Montserrat 10: the FX tab's tile (tests/test_fx_ui.cpp). */
 static cp_fx_def_t FX[CP_FX_COUNT] = {
     {"ECHO",CP_FX_CAT_DLY,"TIME","FDBK",0,1,0,.95f,false,CP_FX_REL_TAIL,false},
     {"TAPE ECHO",CP_FX_CAT_DLY,"TIME","WOW",0,1,0,1,false,CP_FX_REL_TAIL,false},
@@ -14,7 +15,7 @@ static cp_fx_def_t FX[CP_FX_COUNT] = {
     {"GATE",CP_FX_CAT_GLT,"RATE","DEPTH",0,1,0,1,false,CP_FX_REL_SNAP,false},
     {"LP FILTER",CP_FX_CAT_FLT,"CUTOFF","RES",0,1,0,.9f,true,CP_FX_REL_SNAP,false},
     {"HP FILTER",CP_FX_CAT_FLT,"CUTOFF","RES",0,1,0,.9f,true,CP_FX_REL_SNAP,false},
-    {"BAND SWEEP",CP_FX_CAT_FLT,"FREQ","WIDTH",0,1,0,1,true,CP_FX_REL_SNAP,false},
+    {"BAND SWP",CP_FX_CAT_FLT,"FREQ","WIDTH",0,1,0,1,true,CP_FX_REL_SNAP,false},
     {"WAH",CP_FX_CAT_FLT,"FREQ","RES",0,1,0,.9f,true,CP_FX_REL_SNAP,false},
     {"FLANGER",CP_FX_CAT_MOD,"SPEED","DEPTH",0,1,0,1,false,CP_FX_REL_SNAP,false},
     {"PHASER",CP_FX_CAT_MOD,"SPEED","FDBK",0,1,0,.9f,false,CP_FX_REL_SNAP,false},
